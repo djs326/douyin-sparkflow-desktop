@@ -287,9 +287,10 @@ class Api:
             return {"ok": False, "cancelled": True}
         try:
             from utils.config import default_ops_log_path, get_app_settings
+            from utils.logger import read_text_autodetect
 
             log_path = Path(get_app_settings().get("ops_log_file") or default_ops_log_path())
-            content = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
+            content = read_text_autodetect(log_path) if log_path.exists() else ""
             Path(path).write_text(content, encoding="utf-8")
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to save log file")

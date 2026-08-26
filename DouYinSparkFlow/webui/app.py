@@ -89,6 +89,7 @@ from webui.ops import (
     sync_daily_schedule_from_config,
     update_daily_schedule,
 )
+from utils.logger import read_text_autodetect
 
 logger = logging.getLogger(__name__)
 
@@ -1171,7 +1172,7 @@ def create_app():
         log_path = Path(get_app_settings().get("ops_log_file") or default_ops_log_path())
         if not log_path.exists():
             return ""
-        return log_path.read_text(encoding="utf-8", errors="replace")
+        return read_text_autodetect(log_path)
 
     @app.get("/ops/logs/download")
     async def logs_download(request: Request):

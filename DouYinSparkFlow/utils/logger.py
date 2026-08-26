@@ -1,6 +1,23 @@
 import logging
 import os
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
+
+
+def read_text_autodetect(path):
+    """读取文本文件，自动探测编码。
+
+    打包版子进程的 stdout 管道默认按系统 ANSI 编码（中文 Windows 为 GBK）输出，
+    旧日志可能是 GBK；新日志已统一 UTF-8。读取时先按 UTF-8 严格解码，
+    失败则回退 GBK，最后兜底 errors="replace"。
+    """
+    data = Path(path).read_bytes()
+    for encoding in ("utf-8", "gbk"):
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="replace")
 
 # 创建 logs 文件夹（如果不存在）
 if not os.path.exists("logs"):

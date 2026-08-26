@@ -22,6 +22,7 @@ from utils.config import (
     repo_root,
     save_config,
 )
+from utils.logger import read_text_autodetect
 
 logger = logging.getLogger(__name__)
 
@@ -291,6 +292,10 @@ def run_background_command(args, log_path, cwd=None, env=None):
     log_path.parent.mkdir(parents=True, exist_ok=True)
     cwd_path = Path(cwd) if cwd else compose_root()
     child_env = os.environ.copy()
+    # 子进程 stdout/stderr 走管道时默认按系统 ANSI 编码（中文 Windows 为 GBK）输出，
+    # 强制 UTF-8 保证写入日志文件的中文可被正确读取。
+    child_env.setdefault("PYTHONIOENCODING", "utf-8")
+    child_env.setdefault("PYTHONUTF8", "1")
     if env:
         child_env.update(env)
 
@@ -439,7 +444,7 @@ def read_log_tail(lines=200):
     log_path = Path(get_app_settings().get("ops_log_file") or default_ops_log_path())
     if not log_path.exists():
         return ""
-    content = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    content = read_text_autodetect(log_path).splitlines()
     return "\n".join(content[-lines:])
 
 
