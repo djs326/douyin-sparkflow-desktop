@@ -35,3 +35,6 @@ build/ms-playwright/
 Thumbs.db
 .idea/
 .vscode/
+
+# AI 助手本地指令文件（仅本地，不推送）
+AGENTS.md
