@@ -1,0 +1,4 @@
+# 桌面版构建依赖（打包安装程序时安装，运行时不需要）
+# 安装：pip install -r requirements-build.txt
+pyinstaller>=6.10
+pywebview>=5.0

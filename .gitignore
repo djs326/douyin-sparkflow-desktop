@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+build/
+dist/
+
+# 运行时数据（不提交）
+DouYinSparkFlow/config.json
+DouYinSparkFlow/usersData.json
+DouYinSparkFlow/webui_settings.json
+DouYinSparkFlow/state/
+DouYinSparkFlow/logs/
+DouYinSparkFlow/webui_users.json
+DouYinSparkFlow/*.log
+
+# Playwright 浏览器（构建时生成）
+DouYinSparkFlow/chrome/
+build/ms-playwright/
+
+# 构建产物
+*.tar.gz
+*.bak-*
+
+# 编辑器/系统
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
