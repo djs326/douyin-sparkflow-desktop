@@ -1,11 +1,14 @@
 # ============================================================
-# DouYin SparkFlow 桌面版一键构建脚本
-# 产物：dist\DouYinSparkFlow-Setup-<Version>.exe
+# DouYin SparkFlow Desktop one-click build script
+# Output: dist\DouYinSparkFlow-Setup-<Version>.exe
 #
-# 用法：
+# Usage:
 #   powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1
 #   powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1 -Version 1.0.1
-#   powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1 -AppOnly   # 只打包应用目录，不生成安装包
+#   powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1 -AppOnly
+#     (-AppOnly: build the app directory only, skip the installer)
+# NOTE: keep this file ASCII-only. Chinese comments break Windows PowerShell 5.1
+#       which reads .ps1 without BOM as ANSI.
 # ============================================================
 param(
     [string]$Version = "1.0.0",
@@ -18,20 +21,19 @@ $RepoRoot   = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $SourceDir  = Join-Path $RepoRoot "DouYinSparkFlow"
 $BuildRoot  = Join-Path $RepoRoot "build"
 $DistRoot   = Join-Path $RepoRoot "dist"
-$AppDistDir = Join-Path $DistRoot "app"          # 应用目录（exe + _internal + chrome + node）
+$AppDistDir = Join-Path $DistRoot "app"          # app dir (exe + _internal + chrome + node)
 $SetupName  = "DouYinSparkFlow-Setup-$Version.exe"
 $VenDir     = Join-Path $BuildRoot "venv"
 $AppName    = "DouYinSparkFlow"
-$PyInstallerSpec = Join-Path $BuildRoot "DouYinSparkFlow.spec"
+$PyWork     = Join-Path $BuildRoot "pyinstaller-work"
 
 Write-Host "== DouYin SparkFlow Desktop Build v$Version ==" -ForegroundColor Cyan
 Write-Host "Repo: $RepoRoot"
 
-# ---------- 0. 前置检查 ----------
+# ---------- 0. prerequisites ----------
 $PyCmd = (Get-Command python -ErrorAction SilentlyContinue).Source
-if (-not $PyCmd) { throw "未找到 Python，请先安装 Python 3.9+ 并加入 PATH" }
+if (-not $PyCmd) { throw "Python 3.9+ not found in PATH" }
 
-# 查找 Inno Setup 编译器
 $Iscc = $null
 $isccCandidates = @(
     "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
@@ -42,95 +44,144 @@ foreach ($c in $isccCandidates) {
     if (Test-Path $c) { $Iscc = $c; break }
 }
 if (-not $Iscc -and -not $AppOnly) {
-    Write-Warning "未找到 Inno Setup 6（ISCC.exe）。将只产出应用目录，不生成安装包。"
-    Write-Warning "下载安装：https://jrsoftware.org/isdl.php"
+    Write-Warning "Inno Setup 6 (ISCC.exe) not found. Building the app directory only."
+    Write-Warning "Download: https://jrsoftware.org/isdl.php"
     $AppOnly = $true
 }
 
-# ---------- 1. 构建 venv 并安装依赖 ----------
+# ---------- 1. build venv + deps ----------
 New-Item -ItemType Directory -Force -Path $BuildRoot | Out-Null
 if (-not (Test-Path (Join-Path $VenDir "Scripts\python.exe"))) {
-    Write-Host "[1/6] 创建构建虚拟环境…" -ForegroundColor Yellow
+    Write-Host "[1/6] Creating build venv..." -ForegroundColor Yellow
     python -m venv $VenDir
 } else {
-    Write-Host "[1/6] 复用构建虚拟环境…" -ForegroundColor Yellow
+    Write-Host "[1/6] Reusing build venv..." -ForegroundColor Yellow
 }
 $VenPy = Join-Path $VenDir "Scripts\python.exe"
 
-Write-Host "[2/6] 安装依赖（清华 PyPI 镜像）…"
+Write-Host "[2/6] Installing dependencies (Tsinghua PyPI mirror)..."
 & $VenPy -m pip install --upgrade pip -q
 & $VenPy -m pip install -r (Join-Path $SourceDir "requirements.txt") -r (Join-Path $SourceDir "requirements-web.txt") -r (Join-Path $SourceDir "requirements-build.txt") -i https://pypi.tuna.tsinghua.edu.cn/simple -q
-if ($LASTEXITCODE -ne 0) { throw "依赖安装失败" }
+if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 
 # ---------- 2. Playwright Chromium ----------
-Write-Host "[3/6] 下载 Playwright Chromium（首次约 170MB）…"
-$env:PLAYWRIGHT_BROWSERS_PATH = Join-Path $BuildRoot "ms-playwright"
+Write-Host "[3/6] Downloading Playwright Chromium (about 170MB on first run)..."
+$BrowsersDir = Join-Path $BuildRoot "ms-playwright"
+$env:PLAYWRIGHT_BROWSERS_PATH = $BrowsersDir
 & $VenPy -m playwright install chromium
-if ($LASTEXITCODE -ne 0) { throw "Playwright 浏览器下载失败" }
+if ($LASTEXITCODE -ne 0) { throw "Playwright browser download failed" }
 
-# ---------- 3. 提取内置 Node（仅 node.exe，自包含） ----------
-Write-Host "[4/6] 提取内置 Node 运行时…"
+# ---------- 3. bundled Node (node.exe is self-contained) ----------
+Write-Host "[4/6] Locating Node runtime..."
 $NodeExe = (Get-Command node -ErrorAction SilentlyContinue).Source
-if (-not $NodeExe) { throw "未找到 node，请先安装 Node.js 18+ 并加入 PATH（协议发送功能需要）" }
+if (-not $NodeExe) { throw "Node.js 18+ not found in PATH (needed for the protocol sender)" }
 
-# ---------- 4. PyInstaller 打包 ----------
-Write-Host "[5/6] PyInstaller 打包 Python 应用…"
-$AddData = @(
-    "core\protocol_sender.mjs:core",
-    "webui\templates:webui\templates",
-    "webui\static:webui\static"
-) -join ";"
-& $VenPy -m PyInstaller `
-    --noconfirm --clean `
-    --onedir `
-    --windowed `
-    --name $AppName `
-    --distpath $DistRoot `
-    --workpath (Join-Path $BuildRoot "pyinstaller-work") `
-    --specpath $BuildRoot `
-    --add-data $AddData `
-    --collect-all playwright `
-    --collect-all webview `
-    --collect-submodules uvicorn `
-    --hidden-import websockets `
-    --hidden-import httpx `
-    --icon (Join-Path $PSScriptRoot "app.ico") `
-    (Join-Path $SourceDir "launcher.py")
-if ($LASTEXITCODE -ne 0) { throw "PyInstaller 打包失败" }
+# ---------- 4. PyInstaller (spec file avoids CLI arg pitfalls) ----------
+Write-Host "[5/6] PyInstaller packaging..."
+$LauncherPy  = Join-Path $SourceDir "launcher.py"
+$IconPath    = Join-Path $PSScriptRoot "app.ico"
+$SpecPath    = Join-Path $BuildRoot "DouYinSparkFlow.spec"
 
-# ---------- 5. 组装发布目录 ----------
-Write-Host "[6/6] 组装发布目录…"
+$spec = @"
+# -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_all
+
+launcher = r'$LauncherPy'
+icon_path = r'$IconPath'
+
+datas = [
+    (r'$($SourceDir -replace '\\','/')/core/protocol_sender.mjs', 'core'),
+    (r'$($SourceDir -replace '\\','/')/webui/templates', 'webui/templates'),
+    (r'$($SourceDir -replace '\\','/')/webui/static', 'webui/static'),
+]
+binaries = []
+hiddenimports = ['websockets', 'httpx']
+
+for pkg in ('playwright', 'webview'):
+    p_datas, p_binaries, p_hidden = collect_all(pkg)
+    datas += p_datas
+    binaries += p_binaries
+    hiddenimports += p_hidden
+
+hiddenimports += ['uvicorn.logging', 'uvicorn.loops', 'uvicorn.loops.auto',
+                  'uvicorn.protocols', 'uvicorn.protocols.http', 'uvicorn.protocols.http.auto',
+                  'uvicorn.protocols.websockets', 'uvicorn.protocols.websockets.auto',
+                  'uvicorn.lifespan', 'uvicorn.lifespan.on', 'uvicorn.lifespan.off',
+                  'uvicorn.lifespan.auto', 'uvicorn.lifespan.types']
+
+a = Analysis(
+    [launcher],
+    pathex=[],
+    binaries=binaries,
+    datas=datas,
+    hiddenimports=hiddenimports,
+    hookspath=[],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[],
+    noarchive=False,
+)
+pyz = PYZ(a.pure)
+exe = EXE(
+    pyz,
+    a.scripts,
+    [],
+    exclude_binaries=True,
+    name='$AppName',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=True,
+    console=False,
+    icon=icon_path,
+)
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='$AppName',
+)
+"@
+Set-Content -Path $SpecPath -Value $spec -Encoding UTF8
+& $VenPy -m PyInstaller $SpecPath --noconfirm --clean --distpath $DistRoot --workpath $PyWork
+if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
+
+# ---------- 5. assemble app dir ----------
+Write-Host "[6/6] Assembling app directory..."
 if (Test-Path $AppDistDir) { Remove-Item -Recurse -Force $AppDistDir }
 $PyOut = Join-Path $DistRoot $AppName
+if (-not (Test-Path $PyOut)) { throw "PyInstaller output not found: $PyOut (clean dist/ and retry)" }
 Move-Item $PyOut $AppDistDir
 
-# 复制 Playwright 浏览器 → chrome/
 $ChromeDir = Join-Path $AppDistDir "chrome"
 New-Item -ItemType Directory -Force -Path $ChromeDir | Out-Null
-Get-ChildItem (Join-Path $env:PLAYWRIGHT_BROWSERS_PATH) -Directory | ForEach-Object {
+Get-ChildItem $BrowsersDir -Directory | ForEach-Object {
     Copy-Item -Recurse -Force $_.FullName (Join-Path $ChromeDir $_.Name)
 }
 
-# 复制 node.exe → node/
 $NodeDir = Join-Path $AppDistDir "node"
 New-Item -ItemType Directory -Force -Path $NodeDir | Out-Null
 Copy-Item -Force $NodeExe (Join-Path $NodeDir "node.exe")
 
-Write-Host "发布目录：$AppDistDir"
-Write-Host ("发布目录大小：{0:N1} MB" -f ((Get-ChildItem -Recurse $AppDistDir | Measure-Object Length -Sum).Sum / 1MB))
+Write-Host "App directory: $AppDistDir"
+$sizeMb = [math]::Round(((Get-ChildItem -Recurse $AppDistDir | Measure-Object Length -Sum).Sum / 1MB), 1)
+Write-Host "App directory size: $sizeMb MB"
 
-# ---------- 6. Inno Setup 安装包 ----------
+# ---------- 6. Inno Setup installer ----------
 if ($AppOnly) {
-    Write-Host "已跳过安装包生成（-AppOnly）。" -ForegroundColor Yellow
-    Write-Host "发布目录可用：$AppDistDir"
+    Write-Host "Skipped installer (-AppOnly). Use: $AppDistDir"
     exit 0
 }
 
-Write-Host "生成安装包（Inno Setup）…"
+Write-Host "Building installer (Inno Setup)..."
 & $Iscc /DAppVersion=$Version /DAppSourceDir=$AppDistDir "/O$DistRoot" (Join-Path $PSScriptRoot "installer.iss")
-if ($LASTEXITCODE -ne 0) { throw "Inno Setup 编译失败" }
+if ($LASTEXITCODE -ne 0) { throw "Inno Setup compile failed" }
 
 $SetupPath = Join-Path $DistRoot $SetupName
-if (-not (Test-Path $SetupPath)) { throw "未找到安装包产物：$SetupPath" }
-Write-Host "== 构建完成 ==" -ForegroundColor Green
-Write-Host ("安装包：{0}（{1:N1} MB）" -f $SetupPath, ((Get-Item $SetupPath).Length / 1MB))
+if (-not (Test-Path $SetupPath)) { throw "Installer not found: $SetupPath" }
+$setupMb = [math]::Round(((Get-Item $SetupPath).Length / 1MB), 1)
+Write-Host "== Build complete ==" -ForegroundColor Green
+Write-Host "Installer: $SetupPath ($setupMb MB)"

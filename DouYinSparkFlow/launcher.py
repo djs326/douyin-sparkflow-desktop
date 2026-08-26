@@ -39,6 +39,14 @@ logger = logging.getLogger("launcher")
 _running_servers: list = []
 
 
+def _ensure_stdio():
+    """PyInstaller windowed 模式下 sys.stdout/stderr 为 None，替换为 devnull，
+    否则 rich / uvicorn 等库访问 .isatty() 会崩溃。"""
+    for name in ("stdout", "stderr"):
+        if getattr(sys, name) is None:
+            setattr(sys, name, open(os.devnull, "w", encoding="utf-8", errors="replace"))
+
+
 def _setup_logging():
     root = data_dir()
     (root / "logs").mkdir(parents=True, exist_ok=True)
@@ -115,6 +123,21 @@ def wait_for_port(host: str, port: int, timeout: float) -> bool:
     return False
 
 
+def _thread_guard(name):
+    """让后台服务线程的异常落盘而不是静默消失（windowed 模式无控制台）。"""
+
+    def decorator(fn):
+        def wrapper(*args, **kwargs):
+            try:
+                return fn(*args, **kwargs)
+            except Exception:
+                logger.exception("Service thread '%s' crashed", name)
+
+        return wrapper
+
+    return decorator
+
+
 def start_web_server():
     from webui.app import app as web_app
 
@@ -129,6 +152,11 @@ def start_web_server():
     _running_servers.append(server)
     logger.info("Web console listening on http://%s:%s", WEB_HOST, WEB_PORT)
     server.run()
+
+
+@_thread_guard("web-server")
+def run_web_thread():
+    start_web_server()
 
 
 def start_login_desktop_server():
@@ -150,6 +178,11 @@ def start_login_desktop_server():
     server.run()
 
 
+@_thread_guard("login-desktop-server")
+def run_login_thread():
+    start_login_desktop_server()
+
+
 def prepend_bundled_node_to_path():
     """打包版：把 exe 旁的 ``node/`` 目录加入 PATH，协议发送可直接找到 node。"""
     if get_environment() != Environment.PACKED:
@@ -168,17 +201,28 @@ def stop_all_servers():
 
 
 def main():
+    _ensure_stdio()
     _setup_logging()
+    try:
+        _main()
+    except SystemExit:
+        raise
+    except Exception:
+        logger.exception("Unhandled error, exiting")
+        sys.exit(1)
+
+
+def _main():
     root = ensure_data_dirs()
     lock = acquire_single_instance(root)
     prepend_bundled_node_to_path()
 
     logger.info("Starting DouYin SparkFlow desktop build (env=%s)", get_environment())
 
-    web_thread = threading.Thread(target=start_web_server, name="web-server", daemon=True)
+    web_thread = threading.Thread(target=run_web_thread, name="web-server", daemon=True)
     web_thread.start()
     login_thread = threading.Thread(
-        target=start_login_desktop_server, name="login-desktop-server", daemon=True
+        target=run_login_thread, name="login-desktop-server", daemon=True
     )
     login_thread.start()
 

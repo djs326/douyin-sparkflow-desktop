@@ -1,6 +1,9 @@
 ; ============================================================
-; DouYin SparkFlow 桌面版安装程序（Inno Setup 6）
-; 构建脚本会传入 /DAppVersion 与 /DAppSourceDir
+; DouYin SparkFlow desktop installer (Inno Setup 6)
+; The build script passes /DAppVersion and /DAppSourceDir.
+; NOTE: keep this file ASCII-only (Chinese text breaks ISCC's
+; ANSI reader; the ChineseSimplified language strings are
+; provided by the compiler's own .isl file).
 ; ============================================================
 
 #ifndef AppVersion
@@ -16,14 +19,14 @@
 #define MyAppId "8B3E6C2A-5D91-4A7F-9E4C-4E9F1A2B3C4D"
 
 [Setup]
-AppId={{8B3E6C2A-5D91-4A7F-9E4C-DouYinSparkFlow01}
+AppId={{8B3E6C2A-5D91-4A7F-9E4C-4E9F1A2B3C4D}
 AppName={#MyAppName}
 AppVersion={#AppVersion}
 AppPublisher={#MyAppPublisher}
 DefaultDirName={localappdata}\Programs\DouYinSparkFlow
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
-; per-user 安装，无需管理员权限
+; per-user install: no admin rights required
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 OutputBaseFilename=DouYinSparkFlow-Setup-{#AppVersion}
@@ -34,7 +37,7 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-; 运行时数据存于 %APPDATA%\DouYinSparkFlow，卸载时默认保留
+; runtime data lives in %APPDATA%\DouYinSparkFlow and is kept on uninstall by default
 CloseApplications=yes
 RestartApplications=no
 
@@ -57,7 +60,7 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
-; 卸载时可选删除用户数据（默认不删除，勾选才删）
+; delete user data on uninstall only when the user explicitly opts in
 Type: filesandordirs; Name: "{userappdata}\DouYinSparkFlow"; Check: DeleteUserData
 
 [Code]
@@ -68,13 +71,13 @@ procedure InitializeWizard;
 begin
   DeleteUserDataPage := CreateInputOptionPage(
     wpReady,
-    '卸载选项',
-    '是否删除用户数据？',
-    '程序安装目录将被卸载。用户数据（登录状态、账号、配置、日志）存放在 %APPDATA%\DouYinSparkFlow。' + #13#10 +
-    '保留数据可以让你以后重新安装时不用重新扫码登录。',
+    'Uninstall options',
+    'Delete user data?',
+    'The program files will be removed. Your user data (login state, accounts, config, logs) is stored in %APPDATA%\DouYinSparkFlow.' + #13#10 +
+    'Keeping it lets you reinstall without logging in again.',
     True, False);
-  DeleteUserDataPage.Add('保留我的数据（推荐）');
-  DeleteUserDataPage.Add('同时删除用户数据');
+  DeleteUserDataPage.Add('Keep my data (recommended)');
+  DeleteUserDataPage.Add('Also delete user data');
   DeleteUserDataPage.Values[0] := True;
 end;
 
