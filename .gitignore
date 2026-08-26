@@ -15,6 +15,13 @@ DouYinSparkFlow/logs/
 DouYinSparkFlow/webui_users.json
 DouYinSparkFlow/*.log
 
+# 仓库根目录的运行时数据（开发调试时在根目录运行生成）
+/state/
+/logs/
+
+# 任务异常时的错误转储（webui/ops.py 运行时写到 cwd）
+task_error.txt
+
 # Playwright 浏览器（构建时生成）
 DouYinSparkFlow/chrome/
 build/ms-playwright/

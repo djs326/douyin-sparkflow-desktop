@@ -25,7 +25,7 @@ def configure_playwright_environment():
 
     env = get_environment()
     if env == Environment.PACKED:
-        bundle_path = Path(sys.executable).resolve().parent / PLAYWRIGHT_BROWSERS_PATH
+        bundle_path = Path(sys.executable).resolve().parent / "chrome"
     else:
         bundle_path = _local_browser_bundle_path()
 

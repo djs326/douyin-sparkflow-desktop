@@ -11,8 +11,12 @@ from fastapi import FastAPI, HTTPException, Request, Response
 import uvicorn
 from playwright.async_api import async_playwright
 
+from core.browser import configure_playwright_environment
 from core.login import collect_login_result
 from utils.config import Environment, data_dir, get_environment
+
+# 打包版必须指向 exe 旁的 chrome\ 目录，否则 Playwright 找不到内置 Chromium
+configure_playwright_environment()
 
 
 REMOTE_LOGIN_URL = "https://creator.douyin.com/"

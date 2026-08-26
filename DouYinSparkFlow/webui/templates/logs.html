@@ -138,7 +138,7 @@
         <span>自动刷新</span>
       </label>
       <button type="button" class="ghost-button" id="logs-refresh-btn">↻ 刷新</button>
-      <a class="ghost-button" id="logs-download-btn" href="data:text/plain;charset=utf-8,{{ log_tail|urlencode }}">⬇ 下载日志</a>
+      <button type="button" class="ghost-button" id="logs-download-btn">⬇ 下载日志</button>
     </div>
   </div>
 
@@ -213,6 +213,39 @@
     if (toggle) toggle.addEventListener("change", () => setLive(toggle.checked));
     if (refreshBtn) refreshBtn.addEventListener("click", refresh);
     if (statusEl) statusEl.textContent = fmtTime();
+
+    const downloadBtn = document.getElementById("logs-download-btn");
+    if (downloadBtn) {
+      downloadBtn.addEventListener("click", async () => {
+        const d = new Date();
+        const p = (n) => String(n).padStart(2, "0");
+        const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+        const fileName = `douyin-sparkflow-${stamp}.log`;
+        const api = window.pywebview && window.pywebview.api;
+        if (!api || typeof api.save_log_file !== "function") {
+          // 浏览器模式：直接走服务端下载
+          window.location.href = "/ops/logs/download";
+          return;
+        }
+        const original = downloadBtn.textContent;
+        try {
+          const result = await api.save_log_file(fileName);
+          if (result && result.ok) {
+            downloadBtn.textContent = "✓ 已保存";
+          } else if (result && result.cancelled) {
+            downloadBtn.textContent = original;
+          } else {
+            downloadBtn.textContent = result && result.error ? "保存失败" : "保存失败";
+          }
+          if (!(result && result.ok)) {
+            setTimeout(() => { downloadBtn.textContent = original; }, 3000);
+          }
+        } catch (err) {
+          downloadBtn.textContent = "保存失败";
+          setTimeout(() => { downloadBtn.textContent = original; }, 3000);
+        }
+      });
+    }
   })();
 </script>
 {% endblock %}

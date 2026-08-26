@@ -24,6 +24,7 @@ from core.tasks import run_browser_tasks, task_run_lock
 from utils.config import (
     Environment,
     data_dir,
+    default_ops_log_path,
     get_app_settings,
     get_config,
     get_environment,
@@ -1165,6 +1166,45 @@ def create_app():
                 "log_tail": read_log_tail(400),
             },
         )
+
+    def _ops_log_content() -> str:
+        log_path = Path(get_app_settings().get("ops_log_file") or default_ops_log_path())
+        if not log_path.exists():
+            return ""
+        return log_path.read_text(encoding="utf-8", errors="replace")
+
+    @app.get("/ops/logs/download")
+    async def logs_download(request: Request):
+        maybe_redirect = require_admin(request)
+        if maybe_redirect:
+            return maybe_redirect
+        filename = f"douyin-sparkflow-{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
+        return Response(
+            content=_ops_log_content(),
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @app.post("/ops/logs/save")
+    async def logs_save(request: Request):
+        maybe_redirect = require_admin(request)
+        if maybe_redirect:
+            return maybe_redirect
+        form = await request.form()
+        if not validate_csrf(request, str(form.get("csrf_token", ""))):
+            return JSONResponse({"ok": False, "error": "Invalid CSRF token"}, status_code=403)
+        target = str(form.get("path", "")).strip().strip('"')
+        if not target:
+            return JSONResponse({"ok": False, "error": "未提供保存路径"}, status_code=400)
+        target_path = Path(target)
+        if not target_path.is_absolute():
+            return JSONResponse({"ok": False, "error": "保存路径必须是绝对路径"}, status_code=400)
+        try:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_text(_ops_log_content(), encoding="utf-8")
+        except OSError as exc:
+            return JSONResponse({"ok": False, "error": f"写入失败：{exc}"}, status_code=400)
+        return JSONResponse({"ok": True, "path": str(target_path)})
 
     login_transition_lock = asyncio.Lock()
 
