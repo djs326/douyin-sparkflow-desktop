@@ -100,5 +100,5 @@ cd DouYinSparkFlow
 
 - 扫码登录依赖真实 Chromium（内置），WebView2 无法替代——这是抖音登录的技术限制
 - 协议发送（`useProtocolSender=true`）需要 Node.js：打包版内置，开发版需本机安装
-- 安装包约 350-400MB（含 Chromium 与 Node），属正常体积
+- 安装包约 220MB、应用目录约 680MB（含 Chromium 与 Node），属正常体积
 - PyInstaller 打包的 exe 可能被杀软误报，发布说明中建议注明

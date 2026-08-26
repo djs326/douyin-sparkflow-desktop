@@ -69,8 +69,8 @@ powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1 -AppOnly
 **产物：**
 
 ```
-dist\DouYinSparkFlow-Setup-1.0.0.exe   ← 安装包（发布给用户的就是这个，约 350-400MB）
-dist\app\                              ← 应用目录（绿色版，可整体复制分发）
+dist\DouYinSparkFlow-Setup-1.0.0.exe   ← 安装包（发布给用户的就是这个，约 220MB）
+dist\app\                              ← 应用目录（绿色版，约 680MB，可整体复制分发）
 ```
 
 ## 📂 项目结构
