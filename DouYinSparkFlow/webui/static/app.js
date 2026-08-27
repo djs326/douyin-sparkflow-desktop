@@ -275,6 +275,18 @@
       document
         .querySelectorAll("[data-refresh-notice]")
         .forEach((node) => node.classList.add("visible"));
+      // 任务刚结束：目标级列表是服务端渲染的，短暂提示后自动刷新页面展示最新结果。
+      // 用户正在输入时跳过自动刷新（此时可手动点“刷新详情”）。
+      const active = document.activeElement;
+      const typing =
+        active &&
+        ["INPUT", "TEXTAREA", "SELECT"].includes(active.tagName) &&
+        String(active.value || "").length > 0;
+      if (!typing) {
+        window.setTimeout(() => {
+          if (!document.hidden) window.location.reload();
+        }, 2500);
+      }
     }
     previousRunning = Boolean(task.running);
     document.querySelectorAll("[data-overview-live-state]").forEach((node) => {
@@ -660,8 +672,6 @@
       names.forEach((name) => {
         const label = document.createElement("label");
         label.className = `friend-option${selected.has(name) ? " selected" : ""}`;
-        const text = document.createElement("span");
-        text.textContent = name;
         const checkbox = document.createElement("input");
         checkbox.type = "checkbox";
         checkbox.checked = selected.has(name);
@@ -671,7 +681,9 @@
           syncTextarea();
           render();
         });
-        label.append(text, checkbox);
+        const text = document.createElement("span");
+        text.textContent = name;
+        label.append(checkbox, text);
         list.appendChild(label);
       });
     };

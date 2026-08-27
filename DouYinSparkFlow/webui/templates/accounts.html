@@ -32,10 +32,6 @@
                 <span>显示名</span>
                 <input type="text" name="username" value="{{ account.username }}">
               </label>
-              <label class="check-row">
-                <input type="checkbox" name="enabled" {% if account.enabled|default(true) %}checked{% endif %}>
-                <span>启用自动续火花</span>
-              </label>
             </div>
             <label>
               <span>目标好友，每行一个</span>
@@ -87,31 +83,24 @@
               >
                 <i data-lucide="save"></i><span>保存登录态</span>
               </button>
-            </div>
-          </form>
-          <div class="button-row section-actions">
-            <form method="post" action="/accounts/{{ account.unique_id }}/toggle-enabled">
-              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <button class="button button-quiet" type="submit">
-                <i data-lucide="{% if account.enabled|default(true) %}pause{% else %}play{% endif %}"></i>
-                <span>{% if account.enabled|default(true) %}停用自动发送{% else %}启用自动发送{% endif %}</span>
-              </button>
-            </form>
-            {% if is_admin %}
-            <form
-              method="post"
-              action="/accounts/{{ account.unique_id }}/delete"
-              data-confirm-title="删除账号"
-              data-confirm="将删除账号“{{ account.username }}”及其目标、发送账本和失败记录。此操作无法撤销。"
-              data-confirm-accept="确认删除"
-            >
-              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-              <button class="button button-danger" type="submit">
+              <label class="check-row inline-check">
+                <input type="checkbox" name="enabled" {% if account.enabled|default(true) %}checked{% endif %}>
+                <span>启用自动续火花</span>
+              </label>
+              {% if is_admin %}
+              <button
+                class="button button-danger"
+                type="submit"
+                formaction="/accounts/{{ account.unique_id }}/delete"
+                data-confirm-title="删除账号"
+                data-confirm="将删除账号“{{ account.username }}”及其目标、发送账本和失败记录。此操作无法撤销。"
+                data-confirm-accept="确认删除"
+              >
                 <i data-lucide="trash-2"></i><span>删除账号</span>
               </button>
-            </form>
-            {% endif %}
-          </div>
+              {% endif %}
+            </div>
+          </form>
         </div>
       </details>
       {% else %}

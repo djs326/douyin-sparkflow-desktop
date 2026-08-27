@@ -144,8 +144,9 @@
         </span>
         <span class="account-console-metrics">
           <span class="status-chip success">已确认 <b data-account-confirmed>{{ success_count }}</b></span>
-          {% if exception_count %}<span class="status-chip danger">需处理 <b data-account-attention>{{ exception_count }}</b></span>{% endif %}
-          {% if waiting_targets|length %}<span class="status-chip warning">待发送 <b data-account-pending>{{ waiting_targets|length }}</b></span>{% endif %}
+          <span class="status-chip danger">需处理 <b data-account-attention>{{ exception_count }}</b></span>
+          <span class="status-chip warning">待发送 <b data-account-pending>{{ waiting_targets|length }}</b></span>
+          {% if account.account_paused %}<span class="status-chip danger">账号暂停</span>{% endif %}
         </span>
         <i class="summary-chevron" data-lucide="chevron-down"></i>
       </summary>

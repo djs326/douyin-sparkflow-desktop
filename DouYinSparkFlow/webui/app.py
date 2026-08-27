@@ -628,7 +628,7 @@ def create_app():
                 status_code=403,
             )
         if is_bootstrapped():
-            flash(request, "Admin login is already configured.", "warning")
+            flash(request, "管理员登录已配置。", "warning")
             return redirect("/login")
 
         form = await request.form()
@@ -636,17 +636,17 @@ def create_app():
         password = str(form.get("password", ""))
         confirm = str(form.get("confirm_password", ""))
         if not password or password != confirm:
-            flash(request, "Password setup failed. Please enter matching passwords.", "error")
+            flash(request, "两次输入的密码不一致，初始化失败。", "error")
             return redirect("/login")
 
         bootstrap_admin_password(password, username=username)
-        flash(request, "Admin credentials created. Please log in.", "success")
+        flash(request, "管理员账号已创建，请登录。", "success")
         return redirect("/login")
 
     @app.post("/login")
     async def login_action(request: Request):
         if not is_bootstrapped():
-            flash(request, "Create the admin password first.", "warning")
+            flash(request, "请先初始化管理员密码。", "warning")
             return redirect("/login")
 
         form = await request.form()
@@ -662,7 +662,7 @@ def create_app():
         identity = authenticate(username, password)
         if not identity:
             _record_login_failure(username)
-            flash(request, "Invalid username or password.", "error")
+            flash(request, "用户名或密码错误。", "error")
             return redirect("/login")
 
         issue_session(
@@ -671,7 +671,7 @@ def create_app():
             role=identity["role"],
             account_refs=identity.get("account_refs", []),
         )
-        flash(request, "Signed in successfully.", "success")
+        flash(request, "登录成功。", "success")
         return redirect("/")
 
     @app.post("/logout")
@@ -916,9 +916,9 @@ def create_app():
             account["targets"] = targets
             account["enabled"] = str(form.get("enabled", "")) == "on"
             save_userData(accounts)
-            flash(request, f"Updated account {account['username']}.", "success")
+            flash(request, f"账号 {account['username']} 已更新。", "success")
         else:
-            flash(request, "Account not found.", "error")
+            flash(request, "账号不存在。", "error")
 
         return redirect("/accounts")
 
@@ -990,9 +990,9 @@ def create_app():
         updated_accounts = [item for item in accounts if normalize_unique_id(item.get("unique_id")) != normalize_unique_id(unique_id)]
         if len(updated_accounts) != len(accounts):
             save_userData(updated_accounts)
-            flash(request, "Account deleted.", "success")
+            flash(request, "账号已删除。", "success")
         else:
-            flash(request, "Account not found.", "error")
+            flash(request, "账号不存在。", "error")
         return redirect("/accounts")
 
     @app.post("/accounts/{unique_id}/retry-target")
@@ -1007,7 +1007,7 @@ def create_app():
 
         target_name = str(form.get("target", "")).strip()
         if not target_name:
-            flash(request, "Target is required for retry.", "error")
+            flash(request, "重试缺少目标参数。", "error")
             return redirect("/ops/send-console")
 
         accounts, account, access_error = account_for_request(request, unique_id)
@@ -1028,7 +1028,7 @@ def create_app():
             with task_run_lock():
                 await run_browser_tasks(config, [account_copy])
         except Exception as exc:
-            flash(request, f"Retry failed for {account.get('username', 'Account')} / {target_name}: {exc}", "error")
+            flash(request, f"重试失败 {account.get('username', 'Account')} / {target_name}：{exc}", "error")
             return redirect("/ops/send-console")
 
         updated_account = find_account(get_userData(force_reload=True), unique_id) or {}
@@ -1046,7 +1046,7 @@ def create_app():
                 reason = str(account_failure.get("reason") or "Account-level browser failure.")
             else:
                 reason = str(failure_entry.get("reason") or "Retry did not confirm a successful send.")
-            flash(request, f"Retry did not succeed for {account.get('username', 'Account')} / {target_name}: {reason}", "error")
+            flash(request, f"重试未成功 {account.get('username', 'Account')} / {target_name}：{reason}", "error")
         return redirect("/ops/send-console")
 
     @app.post("/accounts/{unique_id}/mark-target-unconfirmed")
@@ -1061,7 +1061,7 @@ def create_app():
 
         target_name = str(form.get("target", "")).strip()
         if not target_name:
-            flash(request, "Target is required.", "error")
+            flash(request, "缺少目标参数。", "error")
             return redirect("/ops/send-console")
 
         accounts, account, access_error = account_for_request(request, unique_id)
@@ -1168,7 +1168,7 @@ def create_app():
         config["happyNewYear"] = happy_new_year
         save_config(config)
 
-        flash(request, "Runtime config saved.", "success")
+        flash(request, "运行配置已保存。", "success")
         return redirect("/config")
 
     @app.post("/settings")
@@ -1195,11 +1195,11 @@ def create_app():
         confirm_password = str(form.get("confirm_password", ""))
         if new_password:
             if new_password != confirm_password:
-                flash(request, "Admin password was not updated because the confirmation did not match.", "error")
+                flash(request, "两次密码不一致，管理员密码未修改。", "error")
                 return redirect("/settings")
             update_admin_password(new_password)
 
-        flash(request, "Panel settings saved.", "success")
+        flash(request, "系统设置已保存。", "success")
         return redirect("/settings")
 
     @app.post("/ops/run-now")
@@ -1217,7 +1217,7 @@ def create_app():
         if pid == TASK_ALREADY_RUNNING:
             flash(request, "已有发送任务正在运行，本次补发全部对象没有启动。请等当前任务结束后再试。", "warning")
         elif pid == -1:
-            flash(request, "Failed to start the full resend run. Check server logs for details.", "error")
+            flash(request, "全部重发启动失败，请查看服务端日志。", "error")
         else:
             flash(request, f"已启动补发全部对象后台任务（pid {pid}）。这只表示任务已启动，实际成功数请刷新发送控制台查看。", "info")
         return redirect("/ops/send-console")
@@ -1237,7 +1237,7 @@ def create_app():
         if pid == TASK_ALREADY_RUNNING:
             flash(request, "已有发送任务正在运行，本次补发未成功目标没有启动。请等当前任务结束后再试。", "warning")
         elif pid == -1:
-            flash(request, "Failed to start the failed-target retry run. Check server logs for details.", "error")
+            flash(request, "补发失败目标启动失败，请查看服务端日志。", "error")
         else:
             flash(request, f"已启动补发未成功目标后台任务（pid {pid}）。这只表示任务已启动，实际成功数请刷新发送控制台查看。", "info")
         return redirect("/ops/send-console")
@@ -1255,11 +1255,11 @@ def create_app():
         refs = principal_account_refs(request)
         pid = run_unsent_retry_now(account_refs=refs)
         if pid == TASK_ALREADY_RUNNING:
-            flash(request, "A send task is already running; unsent retry was not started.", "warning")
+            flash(request, "发送任务正在运行，未启动待发送补发。", "warning")
         elif pid == -1:
-            flash(request, "Failed to start the unsent-target retry run. Check server logs for details.", "error")
+            flash(request, "待发送补发启动失败，请查看服务端日志。", "error")
         else:
-            flash(request, f"Started unsent-target retry background task (pid {pid}). Refresh the send console for results.", "info")
+            flash(request, f"待发送补发已在后台启动（pid {pid}）。刷新发送控制台查看结果。", "info")
         return redirect("/ops/send-console")
 
     @app.post("/ops/proxy/refresh")
@@ -1273,7 +1273,7 @@ def create_app():
             return Response("Invalid CSRF token", status_code=403)
 
         refresh_proxy()
-        flash(request, "Proxy subscription refreshed.", "success")
+        flash(request, "代理订阅已刷新。", "success")
         return redirect("/ops")
 
     @app.post("/ops/proxy/restart")
@@ -1287,7 +1287,7 @@ def create_app():
             return Response("Invalid CSRF token", status_code=403)
 
         restart_proxy()
-        flash(request, "Proxy container restarted.", "success")
+        flash(request, "代理容器已重启。", "success")
         return redirect("/ops")
 
     @app.post("/ops/schedule")
@@ -1303,9 +1303,9 @@ def create_app():
         time_string = str(form.get("daily_schedule", "")).strip()
         result = update_daily_schedule(time_string)
         if getattr(result, "returncode", 1) == 0:
-            flash(request, f"Updated the daily schedule to {time_string}.", "success")
+            flash(request, f"发送窗口已更新为 {time_string}。", "success")
         else:
-            flash(request, f"Failed to update the daily schedule to {time_string}: {getattr(result, 'stderr', '')}", "error")
+            flash(request, f"发送窗口更新失败 {time_string}：{getattr(result, 'stderr', '')}", "error")
         return redirect("/ops")
 
     @app.get("/ops/logs", response_class=HTMLResponse)

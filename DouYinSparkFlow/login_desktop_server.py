@@ -495,7 +495,7 @@ class LoginDesktopManager:
         try:
             await asyncio.wait_for(self._page_operation_lock.acquire(), timeout=5)
         except asyncio.TimeoutError as exc:
-            raise RuntimeError("login page is busy; retry shortly") from exc
+            raise RuntimeError("登录页正忙，请稍后重试") from exc
         try:
             page = await self._get_active_page()
             if page.url.startswith(REMOTE_LOGIN_URL):
@@ -517,7 +517,7 @@ class LoginDesktopManager:
         try:
             await asyncio.wait_for(self._page_operation_lock.acquire(), timeout=5)
         except asyncio.TimeoutError as exc:
-            raise RuntimeError("login page is busy; retry shortly") from exc
+            raise RuntimeError("登录页正忙，请稍后重试") from exc
         try:
             return await self._refresh_login_qr_locked()
         finally:
@@ -784,14 +784,14 @@ async def export():
         try:
             result = await collect_www_login_result(page, manager.context)
         except Exception as www_exc:
-            raise HTTPException(status_code=400, detail=f"creator export failed: {creator_exc}; www export failed: {www_exc}")
+            raise HTTPException(status_code=400, detail=f"创作者导出失败：{creator_exc}；www 导出失败：{www_exc}")
     return {"ok": True, "result": result}
 
 
 @app.get("/qr")
 async def login_qr():
     if manager._page_operation_lock.locked():
-        raise HTTPException(status_code=503, detail="login page is busy; retry shortly")
+        raise HTTPException(status_code=503, detail="登录页正忙，请稍后重试")
     try:
         page = await manager._get_active_page()
     except LoginNetworkError as exc:
@@ -801,7 +801,7 @@ async def login_qr():
         ) from exc
     expired = await page.locator('[class*="qrcode_expired"]').count()
     if expired and await page.locator('[class*="qrcode_expired"]').first.is_visible():
-        raise HTTPException(status_code=409, detail="login QR code has expired")
+        raise HTTPException(status_code=409, detail="登录二维码已过期")
     selectors = (
         'img[class*="qrcode"]',
         'img[src^="data:image/png;base64"]',
@@ -825,7 +825,7 @@ async def login_qr():
                 )
             except Exception:
                 continue
-    raise HTTPException(status_code=202, detail="login QR code is still starting", headers={"Retry-After": "2"})
+    raise HTTPException(status_code=202, detail="登录二维码正在生成中", headers={"Retry-After": "2"})
 
 
 @app.get("/debug/screenshot")
@@ -931,7 +931,7 @@ async def debug_action(request: Request):
         await target_frame.fill(selector, text, timeout=int(payload.get("timeout", 5000)))
         return {"ok": True, "url": page.url}
     else:
-        raise HTTPException(status_code=400, detail=f"unknown action {action!r}")
+        raise HTTPException(status_code=400, detail=f"未知操作 {action!r}")
     return {"ok": True, "url": page.url}
 
 

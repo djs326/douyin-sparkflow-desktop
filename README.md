@@ -1,31 +1,22 @@
-# 🔥 DouYin SparkFlow — Windows 桌面版
+# DouYin SparkFlow — Windows 桌面版
 
 <div align="center">
 
-**抖音多账号火花自动维护系统（纯净 Windows 桌面版）**
-
-一个开箱即用的抖音好友互动管理工具：自动维护好友火花标记，支持多账号管理、定时发送、内置原生窗口 Web 控制台。**无 Docker、无服务器依赖**，双击安装即用，适合在此基础上做二次开发。
-
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](DouYinSparkFlow/LICENSE)
-[![Python](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/)
-
-</div>
-
 ---
 
-## ✨ 功能特性
+## 功能特性
 
-- **🔄 自动维护火花标记** — 智能识别需要维护的好友关系，自动发送消息保持火花
-- **👥 多账号管理** — 支持同时管理多个抖音账号，集中控制、独立配置
-- **⏰ 定时任务调度** — 灵活的时间窗口策略，应用内调度，无需 cron
-- **📤 手动发送控制** — 发送控制台支持立即发送、全部重发、仅重发失败、仅补发未发送
-- **🎨 消息模板系统** — 内置一言、节日祝福等模板，支持自定义
-- **📊 可视化控制台** — 内嵌原生窗口（pywebview），也可浏览器访问；多用户登录与账号权限隔离
-- **🔐 扫码登录** — 弹出 Chromium 窗口扫码，登录态持久化到本地，多用户排队使用登录工作区
-- **📜 运行日志** — 实时查看任务输出，一键导出日志文件（弹出"另存为"对话框选择位置）
-- **🖥️ 纯桌面端** — 无 Docker、无服务器组件；安装包内置 Python 运行时 + Playwright Chromium + Node.js，目标机器零依赖
+- **自动维护火花标记** — 智能识别需要维护的好友关系，自动发送消息保持火花
+- **多账号管理** — 支持同时管理多个抖音账号，集中控制、独立配置
+- **定时任务调度** — 灵活的时间窗口策略，应用内调度，无需 cron
+- **手动发送控制** — 发送控制台支持立即发送、全部重发、仅重发失败、仅补发未发送
+- **消息模板系统** — 内置一言、节日祝福等模板，支持自定义
+- **可视化控制台** — 内嵌原生窗口（pywebview），也可浏览器访问；多用户登录与账号权限隔离
+- **扫码登录** — 弹出 Chromium 窗口扫码，登录态持久化到本地，多用户排队使用登录工作区
+- **运行日志** — 实时查看任务输出，一键导出日志文件（弹出"另存为"对话框选择位置）
+- **纯桌面端** — 无 Docker、无服务器组件；安装包内置 Python 运行时 + Playwright Chromium + Node.js，目标机器零依赖
 
-## 🚀 快速开始（开发模式）
+## 快速开始（开发模式）
 
 ```bash
 # 1. 克隆仓库
@@ -49,7 +40,7 @@ python main.py --web
 
 > 国内网络可加清华源：`-i https://pypi.tuna.tsinghua.edu.cn/simple`
 
-## 📦 构建安装程序
+## 构建安装程序
 
 前置条件（仅构建机需要，用户机器不需要）：
 
@@ -75,7 +66,7 @@ dist\DouYinSparkFlow-Setup-1.0.0.exe   ← 安装包（发布给用户的就是�
 dist\app\                              ← 应用目录（绿色版，约 680MB，可整体复制分发）
 ```
 
-## 📂 项目结构
+## 项目结构
 
 ```
 douyin-sparkflow-desktop/
@@ -120,10 +111,10 @@ douyin-sparkflow-desktop/
 
 ## 🔧 数据与路径约定（二次开发必读）
 
-| 环境 | 配置/数据位置 | 说明 |
-|---|---|---|
-| 打包版（PACKED） | `%APPDATA%\DouYinSparkFlow\` | 可用环境变量 `SPARKFLOW_DATA_DIR` 覆盖 |
-| 开发版（LOCAL） | `DouYinSparkFlow\state\` | 与仓库隔离，不进 Git |
+| 环境             | 配置/数据位置                  | 说明                                    |
+| ---------------- | ------------------------------ | --------------------------------------- |
+| 打包版（PACKED） | `%APPDATA%\DouYinSparkFlow\` | 可用环境变量`SPARKFLOW_DATA_DIR` 覆盖 |
+| 开发版（LOCAL）  | `DouYinSparkFlow\state\`     | 与仓库隔离，不进 Git                    |
 
 运行时数据包括：`config.json`、`usersData.json`、`webui_settings.json`、`browser-profiles\`（登录态）、`login-profile\`、`logs\`、`state\`。开发版的 `config.json` 等配置位于 `DouYinSparkFlow\` 根目录（已被 gitignore）。
 
@@ -134,7 +125,7 @@ douyin-sparkflow-desktop/
 - 打包版 → exe 旁 `chrome\` 目录
 - 开发版 → 仓库 `DouYinSparkFlow\chrome\`（`python -m playwright install chromium` 后目录结构对齐）
 
-## 🧪 测试
+## 测试
 
 ```bash
 cd DouYinSparkFlow
@@ -143,7 +134,7 @@ cd DouYinSparkFlow
 
 > 测试必须从 `DouYinSparkFlow/` 目录运行（测试用 `from core import ...`，依赖 cwd）。
 
-## 🔌 二次开发指南
+## 二次开发指南
 
 1. **改界面**：编辑 `webui/templates/*.html` 与 `webui/static/*.js|css`，开发模式下刷新即生效
 2. **改发送逻辑**：`core/tasks.py` 是核心调度，`core/send_state.py` 控制"已发送/待重试"状态机
@@ -155,7 +146,7 @@ cd DouYinSparkFlow
 
 更详细的架构、数据流与开发场景见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
 
-## ⚠️ 常见问题
+## 常见问题
 
 - **启动后窗口空白**：检查 WebView2 运行时（Win10/11 一般自带），可在 Edge 设置里修复
 - **扫码登录弹不出窗口**：确认没有其他实例占用 18090 端口；登录窗口使用内置 Chromium，首次打开稍慢
@@ -163,7 +154,7 @@ cd DouYinSparkFlow
 - **杀软误报**：PyInstaller 打包的 exe 可能被部分杀软误报，属正常现象，可在发布说明中注明
 - **用户机器无需任何环境**：Python、Node、浏览器全部内置
 
-## ⚠️ 免责声明
+## 免责声明
 
 > **本项目仅供学习研究使用**
 
@@ -172,6 +163,6 @@ cd DouYinSparkFlow
 - 请遵守平台规则，合理使用，避免频繁操作
 - 请评估使用风险，建议使用小号测试
 
-## 📄 许可证
+## 许可证
 
 [MIT License](DouYinSparkFlow/LICENSE)

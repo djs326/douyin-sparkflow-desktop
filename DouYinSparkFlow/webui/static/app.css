@@ -1471,8 +1471,16 @@ textarea {
   font-weight: 600;
 }
 
+/* 按钮行内嵌的勾选项（账号管理页） */
+.inline-check {
+  min-height: 38px;
+  white-space: nowrap;
+}
+
 .check-row input {
-  width: auto;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
   accent-color: var(--primary);
 }
 
@@ -1525,10 +1533,9 @@ textarea {
   padding: 4px;
 }
 
-.friend-option {
+.friend-picker .friend-option {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 10px;
   padding: 8px 12px;
   border-radius: var(--radius-sm);
@@ -1550,7 +1557,9 @@ textarea {
 }
 
 .friend-option input {
-  width: auto;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
   accent-color: var(--primary);
 }
 
