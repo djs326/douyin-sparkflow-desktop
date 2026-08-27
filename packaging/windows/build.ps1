@@ -61,7 +61,13 @@ $VenPy = Join-Path $VenDir "Scripts\python.exe"
 
 Write-Host "[2/6] Installing dependencies (Tsinghua PyPI mirror)..."
 & $VenPy -m pip install --upgrade pip -q
-& $VenPy -m pip install -r (Join-Path $SourceDir "requirements.txt") -r (Join-Path $SourceDir "requirements-web.txt") -r (Join-Path $SourceDir "requirements-build.txt") -i https://pypi.tuna.tsinghua.edu.cn/simple -q
+if ($env:SPARKFLOW_BUILD_NO_MIRROR) {
+    # CI (GitHub Actions) runs outside China: skip the Tsinghua mirror.
+    Write-Host "SPARKFLOW_BUILD_NO_MIRROR is set; using default PyPI index"
+    & $VenPy -m pip install -r (Join-Path $SourceDir "requirements.txt") -r (Join-Path $SourceDir "requirements-web.txt") -r (Join-Path $SourceDir "requirements-build.txt") -q
+} else {
+    & $VenPy -m pip install -r (Join-Path $SourceDir "requirements.txt") -r (Join-Path $SourceDir "requirements-web.txt") -r (Join-Path $SourceDir "requirements-build.txt") -i https://pypi.tuna.tsinghua.edu.cn/simple -q
+}
 if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 
 # ---------- 2. Playwright Chromium ----------

@@ -1,0 +1,43 @@
+name: Build Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: build/ms-playwright
+          key: playwright-${{ hashFiles('DouYinSparkFlow/requirements.txt') }}
+
+      - name: Install Inno Setup
+        shell: powershell
+        run: choco install innosetup --yes --no-progress
+
+      - name: Build installer
+        shell: powershell
+        env:
+          SPARKFLOW_BUILD_NO_MIRROR: "1"
+        run: powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1 -Version $env:GITHUB_REF_NAME.Substring(1)
+
+      - name: Publish release
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create $env:GITHUB_REF_NAME dist\DouYinSparkFlow-Setup-*.exe --title "DouYin SparkFlow $($env:GITHUB_REF_NAME.Substring(1))" --notes "Auto-built by GitHub Actions."
