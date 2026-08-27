@@ -4,15 +4,19 @@ import os
 import secrets
 import sys
 import tempfile
+import threading
 import uuid
+from contextlib import contextmanager
 from copy import deepcopy
 from enum import Enum
 from pathlib import Path
 
-from utils.logger import setup_logger
 
-
-logger = setup_logger(level=logging.DEBUG)
+# 使用 "app" 命名空间而非在此调用 setup_logger：
+# utils/logger.py 的 _app_log_path 依赖 utils.config.data_dir，模块初始化期
+# 调用 setup_logger 会形成循环导入。config 与 core.tasks 共用 "app" logger，
+# 由首个 import 完成的模块（tasks.py）统一配置 handler。
+logger = logging.getLogger("app")
 
 DEBUG = False
 CONFIGFILE = "config.json"
@@ -139,6 +143,35 @@ def default_ops_log_path():
     return data_dir() / "logs" / "douyin-sparkflow.log"
 
 
+def login_desktop_auth_token():
+    """登录桌面服务（18090）的共享认证 token。
+
+    环境变量 ``LOGIN_DESKTOP_AUTH_TOKEN`` 优先（容器/多机场景两服务可用同一 env）；
+    否则落盘到 ``data_dir()/state/login_desktop_auth.token``，同机多进程共享同一数据目录即可互通。
+    """
+    env_token = os.getenv("LOGIN_DESKTOP_AUTH_TOKEN", "").strip()
+    if env_token:
+        return env_token
+    token_path = data_dir() / "state" / "login_desktop_auth.token"
+    try:
+        if token_path.exists():
+            token = token_path.read_text(encoding="utf-8").strip()
+            if token:
+                return token
+    except OSError:
+        pass
+    token = secrets.token_urlsafe(32)
+    try:
+        token_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temp_name = tempfile.mkstemp(prefix=".token.", dir=str(token_path.parent))
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(token)
+        os.replace(temp_name, token_path)
+    except OSError:
+        pass
+    return token
+
+
 def _runtime_root():
     env = get_environment()
     if env == Environment.PACKED:
@@ -214,6 +247,55 @@ def _save_json_file(path, data):
             pass
 
 
+_FILE_LOCK_GUARD = threading.Lock()
+
+
+@contextmanager
+def json_file_lock(name):
+    """针对某一运行时数据文件的跨进程排他锁。
+
+    webui 进程与任务子进程（``main.py --doTask``）会并发读-改-写
+    usersData.json / config.json，单次写入虽原子（mkstemp+os.replace），
+    但读-改-写窗口无互斥会 last-writer-wins 丢更新。对同一文件的
+    读取与写入持有本锁可串行化跨进程访问。
+
+    Windows 用 msvcrt.locking，其他平台用 fcntl.flock；
+    同一进程内的并发调用由 threading.Lock 串行化（避免句柄自锁）。
+    """
+    lock_path = data_dir() / "state" / f"{name}.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with _FILE_LOCK_GUARD:
+        handle = open(lock_path, "a+b")
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                handle.seek(0)
+                if handle.tell() == 0:
+                    handle.write(b"x")
+                    handle.flush()
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                handle.close()
+
+
 def get_config(force_reload=False):
     global config
     if config is None or force_reload:
@@ -241,7 +323,8 @@ def get_userData(force_reload=False):
             raise RuntimeError("USER_DATA is required in GITHUB_ACTIONS mode")
         userData = json.loads(raw)
     else:
-        userData = _load_json_file(users_data_path(), [])
+        with json_file_lock(USERDATAFILE):
+            userData = _load_json_file(users_data_path(), [])
 
     return deepcopy(userData)
 
@@ -250,7 +333,8 @@ def save_userData(accounts):
     global userData
     normalized = list(accounts)
     userData = normalized
-    _save_json_file(users_data_path(), normalized)
+    with json_file_lock(USERDATAFILE):
+        _save_json_file(users_data_path(), normalized)
     return deepcopy(userData)
 
 

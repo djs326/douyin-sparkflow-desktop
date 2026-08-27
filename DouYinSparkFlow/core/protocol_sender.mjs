@@ -119,18 +119,49 @@ async function ensureBundles(cacheDir) {
     const filename = url.split("/").at(-1);
     const filePath = path.join(cacheDir, filename);
     if (fs.existsSync(filePath)) {
-      const response = await fetch(url, { method: "HEAD", headers: { "User-Agent": USER_AGENT } });
-      if (!response.ok) {
-        throw new Error(`Cached SDK bundle is stale or unreachable ${url}: ${response.status}`);
+      // 仅探测可用性；10s 无响应视为缓存仍可用（避免网络挂起拖死整个任务）
+      let cached = true;
+      try {
+        const response = await fetchWithTimeout(url, { method: "HEAD" }, 10000);
+        cached = response.ok;
+      } catch {
+        cached = true;
+      }
+      if (!cached) {
+        throw new Error(`Cached SDK bundle is stale or unreachable ${url}`);
       }
       continue;
     }
-    const response = await fetch(url, { headers: { "User-Agent": USER_AGENT } });
+    const response = await fetchWithTimeout(url, {}, 60000);
     if (!response.ok) {
       throw new Error(`Failed to download SDK bundle ${url}: ${response.status}`);
     }
     const text = await response.text();
-    await fs.promises.writeFile(filePath, text, "utf8");
+    // 原子落盘：先写临时文件再 rename，避免多 Node 进程并发交叉写坏 bundle
+    const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+    await fs.promises.writeFile(tempPath, text, "utf8");
+    try {
+      await fs.promises.rename(tempPath, filePath);
+    } catch (error) {
+      if (!fs.existsSync(filePath)) {
+        throw error;
+      }
+      await fs.promises.unlink(tempPath).catch(() => {});
+    }
+  }
+}
+
+async function fetchWithTimeout(url, options, timeoutMs) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      ...options,
+      headers: { "User-Agent": USER_AGENT, ...(options.headers || {}) },
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -213,11 +244,21 @@ function createWebpackRequire(bundleDir, cookieString) {
     this.close = noop;
   }
 
+  // SDK bundle 内若存在顶层 console.log，会把非 JSON 混入 stdout，破坏
+  // Python 端 json.loads(stdout)；SDK 的日志重定向到 stderr。
+  const sdkConsole = {
+    log: (...args) => console.error("[sdk]", ...args),
+    info: (...args) => console.error("[sdk]", ...args),
+    warn: (...args) => console.error("[sdk]", ...args),
+    error: (...args) => console.error("[sdk]", ...args),
+    debug: (...args) => console.error("[sdk]", ...args),
+  };
+
   const context = {
     self: { webpackChunkdouyin_creator_data: chunkArray },
     window: {},
     globalThis: null,
-    console,
+    console: sdkConsole,
     setTimeout,
     clearTimeout,
     setInterval,
@@ -621,6 +662,8 @@ async function sendMessages({
   const resolved = [];
   const unresolved = [];
   const sent = [];
+  // 让模块级 lastExecution 实时引用同一数组：中途异常时 catch 分支能带出已发送收据
+  lastExecution = { resolved, unresolved, sent };
   const normalizedStrategy = normalizeSendStrategy(sendStrategy);
 
   for (const [target, message] of Object.entries(messagesByTarget)) {
@@ -695,6 +738,10 @@ async function sendMessages({
   return { resolved, unresolved, sent };
 }
 
+// 最近一次发送执行的部分结果：main 异常退出时输出已发送收据，
+// 避免已送达消息丢失记录导致下一轮重复发送。
+let lastExecution = { resolved: [], unresolved: [], sent: [] };
+
 async function main() {
   const payload = await readStdinJson();
   const repoRoot = payload.repoRoot || process.cwd();
@@ -728,6 +775,7 @@ async function main() {
     cookieMap,
     sendStrategy: payload.sendStrategy || {},
   });
+  lastExecution = execution;
 
   try {
     console.log(
@@ -757,6 +805,10 @@ main().catch((error) => {
         error: error?.message || String(error),
         details: error?.details || {},
         stack: error?.stack || "",
+        // 部分结果：中途异常前已发送的收据必须带出，供 Python 端记录
+        resolved: lastExecution.resolved,
+        unresolved: lastExecution.unresolved,
+        sent: lastExecution.sent,
       },
       null,
       2,

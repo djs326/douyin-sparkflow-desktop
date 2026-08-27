@@ -2,11 +2,12 @@ import asyncio
 import json
 import logging
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import urllib.error
 import urllib.request
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -29,6 +30,7 @@ from utils.config import (
     get_config,
     get_environment,
     get_userData,
+    login_desktop_auth_token,
     normalize_unique_id,
     save_app_settings,
     save_config,
@@ -90,8 +92,28 @@ from webui.ops import (
     update_daily_schedule,
 )
 from utils.logger import read_text_autodetect
+from utils.web_middleware import localhost_only_middleware
 
 logger = logging.getLogger(__name__)
+
+# 登录失败限速：同用户名 5 分钟内失败 8 次则锁定 5 分钟（防本机暴力破解）
+_LOGIN_FAILURE_WINDOW_SECONDS = 300
+_LOGIN_FAILURE_LIMIT = 8
+_login_failures: dict = {}
+
+
+def _login_rate_limited(username):
+    now = time.monotonic()
+    stamps = [t for t in _login_failures.get(username, []) if now - t < _LOGIN_FAILURE_WINDOW_SECONDS]
+    _login_failures[username] = stamps
+    return len(stamps) >= _LOGIN_FAILURE_LIMIT
+
+
+def _record_login_failure(username):
+    now = time.monotonic()
+    stamps = [t for t in _login_failures.get(username, []) if now - t < _LOGIN_FAILURE_WINDOW_SECONDS]
+    stamps.append(now)
+    _login_failures[username] = stamps
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -235,7 +257,36 @@ def mark_target_unconfirmed(account, target_name, *, reason="manual_reset_possib
 def login_desktop_api_url():
     settings = get_app_settings(force_reload=True)
     configured = os.getenv("SPARKFLOW_LOGIN_DESKTOP_API_URL") or settings.get("login_desktop_api_url")
-    return str(configured or "http://127.0.0.1:18090").rstrip("/")
+    url = str(configured or "http://127.0.0.1:18090").rstrip("/")
+    return _sanitize_login_desktop_service_url(url, "http://127.0.0.1:18090")
+
+
+def _sanitize_login_desktop_service_url(url, default_url):
+    """登录桌面服务地址只允许本机回环（或容器内服务别名），防止配置型 SSRF。"""
+    allowed_hosts = {"127.0.0.1", "localhost", "::1", "[::1]", "login-desktop"}
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return default_url
+    if parsed.scheme not in {"http", "https"}:
+        return default_url
+    hostname = (parsed.hostname or "").lower()
+    if hostname not in allowed_hosts:
+        logger.warning("Rejected login-desktop API URL with non-local host: %r", url)
+        return default_url
+    return url
+
+
+def _same_origin_browser_request(request):
+    """浏览器跨站 POST 会携带 ``Sec-Fetch-Site: cross-site``；同站为 same-origin/same-site。
+
+    无该头的非浏览器客户端（curl/本机脚本）放行——本机进程本就可达所有端点，
+    此防护针对恶意网页的跨站请求而非本机进程。
+    """
+    fetch_site = str(request.headers.get("sec-fetch-site", "")).strip().lower()
+    if not fetch_site:
+        return True
+    return fetch_site in {"same-origin", "same-site", "none"}
 
 
 def login_desktop_display_mode() -> str:
@@ -293,7 +344,7 @@ def fetch_login_desktop_asset(asset_path: str, query: str = ""):
 def call_login_desktop(path: str, *, method: str = "GET", payload: dict | None = None, timeout: int = 20) -> dict:
     url = f"{login_desktop_api_url()}{path}"
     data = None
-    headers = {}
+    headers = {"X-Login-Desktop-Token": login_desktop_auth_token()}
     if payload is not None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers["Content-Type"] = "application/json; charset=utf-8"
@@ -430,6 +481,12 @@ def create_app():
         same_site="lax",
         https_only=secure_cookie,
     )
+
+    @app.middleware("http")
+    async def localhost_guard(request: Request, call_next):
+        # 拒绝非本机 Host 头（防 DNS rebinding 跨域读取控制台数据）
+        return await localhost_only_middleware(request, call_next)
+
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     DEBUG_ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -558,6 +615,11 @@ def create_app():
 
     @app.post("/bootstrap")
     async def bootstrap(request: Request):
+        if not _same_origin_browser_request(request):
+            return PlainTextResponse(
+                "Cross-site requests are not allowed for bootstrap",
+                status_code=403,
+            )
         if is_bootstrapped():
             flash(request, "Admin login is already configured.", "warning")
             return redirect("/login")
@@ -585,8 +647,14 @@ def create_app():
         password = str(form.get("password", ""))
         from webui.users import authenticate
 
+        if _login_rate_limited(username):
+            logger.warning("Login rate limited for user %r", username)
+            flash(request, "尝试次数过多，请稍后再试。", "error")
+            return redirect("/login")
+
         identity = authenticate(username, password)
         if not identity:
+            _record_login_failure(username)
             flash(request, "Invalid username or password.", "error")
             return redirect("/login")
 
@@ -606,7 +674,7 @@ def create_app():
 
     @app.get("/api/ops/overview")
     async def ops_overview(request: Request):
-        if not current_user(request):
+        if not current_principal(request):
             return JSONResponse(
                 {"error": "Unauthorized"},
                 status_code=401,
@@ -1276,9 +1344,15 @@ def create_app():
         target = str(form.get("path", "")).strip().strip('"')
         if not target:
             return JSONResponse({"ok": False, "error": "未提供保存路径"}, status_code=400)
-        target_path = Path(target)
+        target_path = Path(target).resolve()
         if not target_path.is_absolute():
             return JSONResponse({"ok": False, "error": "保存路径必须是绝对路径"}, status_code=400)
+        allowed_roots = [Path.home().resolve(), data_dir().resolve()]
+        if not any(root == target_path or root in target_path.parents for root in allowed_roots):
+            return JSONResponse(
+                {"ok": False, "error": "保存路径必须在用户目录或应用数据目录内"},
+                status_code=400,
+            )
         try:
             target_path.parent.mkdir(parents=True, exist_ok=True)
             target_path.write_text(_ops_log_content(), encoding="utf-8")

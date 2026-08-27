@@ -1,10 +1,12 @@
-"""验证 launcher 单实例锁的 PID 存活探测（修复后）。
+"""验证 launcher 单实例锁的 PID 存活探测（已用 OpenProcess+GetExitCodeProcess 修复）。
 
 用法（在项目目录的 PowerShell 里）：
-    cd C:\Users\Lanxi\Desktop\douyin-sparkflow-desktop\DouYinSparkFlow
-    .\.venv\Scripts\python.exe scripts\verify_launcher_lock.py
+    cd C:\\Users\\Lanxi\\Desktop\\douyin-sparkflow-desktop\\DouYinSparkFlow
+    .\\.venv\\Scripts\\python.exe scripts\\verify_launcher_lock.py
 
-期望输出全部 PASS。修复前：对已死 PID 会抛异常（导致程序静默退出、双击没反应）。
+期望输出全部 PASS。修复前：Windows 上 os.kill(pid, 0) 的 sig=0 即 CTRL_C_EVENT，
+"探测自己"会向同控制台广播 Ctrl+C、杀死运行本脚本的终端（见 OSKILL-PROBE-BUG.md）；
+修复后探测自己无副作用，本脚本即回归验证。
 """
 
 import os
