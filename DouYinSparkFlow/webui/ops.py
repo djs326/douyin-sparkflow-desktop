@@ -1,3 +1,4 @@
+import asyncio
 import errno
 import json
 import hashlib
@@ -717,6 +718,43 @@ def _normalize_send_window():
         "endHour": int(raw.get("endHour", 18)),
         "scheduleIntervalMinutes": max(1, int(raw.get("scheduleIntervalMinutes", 10))),
     }
+
+
+async def run_send_window_scheduler():
+    """Windows 桌面版的应用内定时调度器。
+
+    在 dailySendWindow 窗口内，每隔 scheduleIntervalMinutes 的分钟刻度
+    触发一次"补发待发送"任务（run_task_now(unsent_only=True)）。
+    任务锁（task_run_lock）保证不会与手动任务并发。
+    """
+    last_trigger_slot = None
+    while True:
+        await asyncio.sleep(15)
+        try:
+            window = _normalize_send_window()
+            if not window.get("enabled"):
+                last_trigger_slot = None
+                continue
+            now = datetime.now(_schedule_timezone())
+            if now.hour < window["startHour"] or now.hour > window["endHour"]:
+                last_trigger_slot = None
+                continue
+            interval = window["scheduleIntervalMinutes"]
+            if now.minute % interval != 0:
+                continue
+            trigger_slot = (now.date(), now.hour * 60 + now.minute)
+            if last_trigger_slot == trigger_slot:
+                continue
+            last_trigger_slot = trigger_slot
+            pid = run_task_now(unsent_only=True)
+            if pid == TASK_ALREADY_RUNNING:
+                logger.info("Send window scheduler skipped: task lock active")
+            elif pid and pid > 0:
+                logger.info("Send window scheduler triggered unsent send pid=%s at %s", pid, now.isoformat())
+            else:
+                logger.warning("Send window scheduler trigger failed pid=%s", pid)
+        except Exception:
+            logger.exception("Send window scheduler tick failed")
 
 
 def _parse_sent_at(raw_value, local_tz):

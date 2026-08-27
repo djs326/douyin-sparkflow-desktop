@@ -86,6 +86,7 @@ from webui.ops import (
     restart_proxy,
     run_failed_retry_now,
     run_task_now,
+    run_send_window_scheduler,
     run_unsent_retry_now,
     task_run_lock_status,
     sync_daily_schedule_from_config,
@@ -462,11 +463,17 @@ def create_app():
         if result.returncode != 0:
             logger.warning("Failed to synchronize the configured daily schedule: %s", result.stderr)
         watchdog = asyncio.create_task(login_workspace_watchdog())
+        send_window_scheduler = asyncio.create_task(run_send_window_scheduler())
         try:
             yield
         finally:
             watchdog.cancel()
-            await asyncio.gather(watchdog, return_exceptions=True)
+            send_window_scheduler.cancel()
+            await asyncio.gather(
+                watchdog,
+                send_window_scheduler,
+                return_exceptions=True,
+            )
     secure_cookie = str(os.getenv("SPARKFLOW_SESSION_COOKIE_SECURE") or "").strip().lower() in {
         "1",
         "true",

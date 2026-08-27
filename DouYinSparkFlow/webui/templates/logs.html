@@ -65,6 +65,8 @@
         if (codeEl) {
           codeEl.style.display = "";
           codeEl.textContent = text;
+          // 始终滚动到底部，展示最新日志
+          codeEl.scrollTop = codeEl.scrollHeight;
         }
         if (lineEl) lineEl.textContent = `${text.trim().split(/\r?\n/).length} 行`;
       } else {
@@ -93,6 +95,8 @@
       }
     };
 
+    const autorefreshKey = "sparkflow-logs-autorefresh";
+
     const setLive = (on) => {
       if (liveDot) liveDot.classList.toggle("live", on);
       if (timer) { clearInterval(timer); timer = null; }
@@ -100,11 +104,27 @@
         timer = setInterval(refresh, 5000);
         refresh();
       }
+      try {
+        localStorage.setItem(autorefreshKey, on ? "1" : "0");
+      } catch {
+        // 存储不可用时仅本次会话生效
+      }
     };
 
     if (toggle) toggle.addEventListener("change", () => setLive(toggle.checked));
     if (refreshBtn) refreshBtn.addEventListener("click", refresh);
     if (statusEl) statusEl.textContent = fmtTime();
+
+    // 恢复自动刷新开关状态；初始内容也滚动到底部
+    try {
+      if (localStorage.getItem(autorefreshKey) === "1" && toggle) {
+        toggle.checked = true;
+        setLive(true);
+      }
+    } catch {
+      // 忽略
+    }
+    if (codeEl) codeEl.scrollTop = codeEl.scrollHeight;
 
     const downloadBtn = document.getElementById("logs-download-btn");
     if (downloadBtn) {
