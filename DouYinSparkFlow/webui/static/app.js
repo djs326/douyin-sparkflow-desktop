@@ -21,24 +21,11 @@
     }
   };
 
-  applyTheme(storedTheme() || "dark");
+  applyTheme(storedTheme() || "light");
   document.querySelectorAll("[data-theme-toggle]").forEach((button) => {
     button.addEventListener("click", () => {
       applyTheme(root.dataset.theme === "light" ? "dark" : "light");
     });
-  });
-})();
-
-(() => {
-  const body = document.body;
-  document.querySelectorAll("[data-nav-toggle]").forEach((button) => {
-    button.addEventListener("click", () => body.classList.add("nav-open"));
-  });
-  document.querySelectorAll("[data-nav-close]").forEach((button) => {
-    button.addEventListener("click", () => body.classList.remove("nav-open"));
-  });
-  document.querySelectorAll(".nav-item").forEach((link) => {
-    link.addEventListener("click", () => body.classList.remove("nav-open"));
   });
 })();
 
@@ -192,20 +179,12 @@
 
   const updateTaskBanner = (task) => {
     document.querySelectorAll("[data-task-banner]").forEach((banner) => {
-      banner.className = "status-banner";
-      if (task.running) {
-        banner.classList.add("warning");
-        banner.querySelector("[data-task-text]").textContent =
-          `发送任务运行中，已运行约 ${task.ageSeconds || 0} 秒`;
-      } else if (task.stale) {
-        banner.classList.add("info");
-        banner.querySelector("[data-task-text]").textContent =
-          "检测到过期任务锁，下次启动任务时会自动清理";
-      } else {
-        banner.classList.add("success");
-        banner.querySelector("[data-task-text]").textContent =
-          "当前没有发送任务运行";
-      }
+      // 仅在任务运行时显示；平时隐藏，减少页面噪音
+      banner.hidden = !task.running;
+      if (!task.running) return;
+      banner.className = "status-banner warning";
+      banner.querySelector("[data-task-text]").textContent =
+        `发送任务运行中，已运行约 ${task.ageSeconds || 0} 秒`;
     });
   };
 
@@ -726,6 +705,82 @@
     });
     render();
   });
+})();
+
+(() => {
+  const scroll = document.getElementById("tags-view-scroll");
+  if (!scroll) return;
+  const HOME_PATH = "/";
+  const storageKey = "sparkflow-tags";
+
+  const readTags = () => {
+    try {
+      const parsed = JSON.parse(sessionStorage.getItem(storageKey) || "[]");
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const writeTags = (tags) => {
+    try {
+      sessionStorage.setItem(storageKey, JSON.stringify(tags));
+    } catch {
+      // 忽略
+    }
+  };
+
+  const render = () => {
+    const tags = readTags();
+    const currentPath = window.location.pathname;
+    scroll.innerHTML = "";
+    tags.forEach((tag) => {
+      const chip = document.createElement("span");
+      chip.className = `tag-chip${tag.path === currentPath ? " active" : ""}`;
+      const label = document.createElement("span");
+      label.textContent = tag.title;
+      chip.append(label);
+      if (tag.path !== HOME_PATH) {
+        const close = document.createElement("span");
+        close.className = "tag-close";
+        close.setAttribute("role", "button");
+        close.setAttribute("aria-label", `关闭 ${tag.title}`);
+        close.textContent = "✕";
+        close.addEventListener("click", (event) => {
+          event.stopPropagation();
+          const remaining = readTags().filter((item) => item.path !== tag.path);
+          writeTags(remaining);
+          render();
+          if (tag.path === currentPath) {
+            const fallback = remaining[remaining.length - 1] || { path: HOME_PATH };
+            window.location.href = fallback.path;
+          }
+        });
+        chip.append(close);
+      }
+      chip.addEventListener("click", () => {
+        if (tag.path !== currentPath) window.location.href = tag.path;
+      });
+      scroll.append(chip);
+    });
+  };
+
+  const registerCurrent = () => {
+    const path = window.location.pathname;
+    const anchor = document.querySelector(
+      `.nav-item[data-tag-path="${CSS.escape(path)}"]`,
+    );
+    const title = anchor ? anchor.dataset.tagTitle : document.title;
+    const tags = readTags();
+    if (!tags.some((tag) => tag.path === path)) {
+      tags.push({ path, title: title || path });
+      writeTags(tags);
+    }
+    render();
+  };
+
+  registerCurrent();
+  window.addEventListener("pageshow", render);
 })();
 
 window.addEventListener("DOMContentLoaded", () => {

@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block nav_key %}config{% endblock %}
+{% block page_key %}config{% endblock %}
+{% block title %}运行配置{% endblock %}
+{% block breadcrumb_title %}运行配置{% endblock %}
+
+{% block content %}
+<div class="page-stack">
+  <section class="panel">
+    <div style="padding: 18px 20px 22px;">
+      <form method="post" action="/config" class="stack-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label><span>固定消息模板</span><input type="text" name="messageTemplate" value="{{ runtime_config.messageTemplate }}"></label>
+        <label><span>消息变体，每行一个</span><textarea name="messageVariants" rows="7">{{ runtime_config.sendStrategy.messageVariants|join('\n') }}</textarea></label>
+        <div class="form-grid">
+          <label><span>消息最小间隔（秒）</span><input type="number" name="messageIntervalSecondsMin" min="0" value="{{ runtime_config.sendStrategy.messageIntervalSecondsMin }}"></label>
+          <label><span>消息最大间隔（秒）</span><input type="number" name="messageIntervalSecondsMax" min="0" value="{{ runtime_config.sendStrategy.messageIntervalSecondsMax }}"></label>
+        </div>
+        <label>
+          <span>目标顺序</span>
+          <select name="shuffleTargets">
+            <option value="on" {% if runtime_config.sendStrategy.shuffleTargets %}selected{% endif %}>随机打乱</option>
+            <option value="" {% if not runtime_config.sendStrategy.shuffleTargets %}selected{% endif %}>保持配置顺序</option>
+          </select>
+        </label>
+        <button class="button button-primary" type="submit"><i data-lucide="save"></i><span>保存运行配置</span></button>
+      </form>
+    </div>
+  </section>
+</div>
+{% endblock %}

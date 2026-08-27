@@ -258,10 +258,14 @@ class WebUiSafetyTests(unittest.TestCase):
         self.assertEqual(b"fake-png", response.content)
 
     def test_dashboard_contains_mobile_qr_controls(self):
+        workspace = (Path(app_module.TEMPLATES_DIR) / "login_workspace.html").read_text(encoding="utf-8")
+        self.assertIn("data-login-qr", workspace)
+        self.assertIn("data-refresh-login-qr", workspace)
+        self.assertIn("/login-desktop/qr", workspace)
+        # 登录工作区已独立成页，但首页保留任务状态横幅与实时轮询入口
         dashboard = (Path(app_module.TEMPLATES_DIR) / "dashboard.html").read_text(encoding="utf-8")
-        self.assertIn("data-login-qr", dashboard)
-        self.assertIn("data-refresh-login-qr", dashboard)
-        self.assertIn("/login-desktop/qr", dashboard)
+        self.assertIn("data-overview-root", dashboard)
+        self.assertIn("data-task-banner", dashboard)
 
     def test_login_workspace_loads_inside_dashboard_frame(self):
         script = (Path(app_module.STATIC_DIR) / "app.js").read_text(encoding="utf-8")

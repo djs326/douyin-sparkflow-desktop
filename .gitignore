@@ -22,6 +22,9 @@ DouYinSparkFlow/*.log
 # 任务异常时的错误转储（webui/ops.py 运行时写到 cwd）
 task_error.txt
 
+# NewUI 设计预览截图（仅本地查看）
+NewUI/*.png
+
 # Playwright 浏览器（构建时生成）
 DouYinSparkFlow/chrome/
 build/ms-playwright/

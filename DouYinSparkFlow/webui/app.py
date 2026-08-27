@@ -662,7 +662,7 @@ def create_app():
             flash(request, "普通用户已创建。", "success")
         except UserStoreError as exc:
             flash(request, str(exc), "error")
-        return redirect("/#user-management")
+        return redirect("/settings")
 
     @app.post("/admin/users/{username}/update")
     async def update_admin_user(request: Request, username: str):
@@ -684,7 +684,7 @@ def create_app():
             flash(request, "普通用户已更新。", "success")
         except UserStoreError as exc:
             flash(request, str(exc), "error")
-        return redirect("/#user-management")
+        return redirect("/settings")
 
     @app.post("/admin/users/{username}/delete")
     async def delete_admin_user(request: Request, username: str):
@@ -701,7 +701,7 @@ def create_app():
                 flash(request, "普通用户不存在。", "error")
         except UserStoreError as exc:
             flash(request, str(exc), "error")
-        return redirect("/#user-management")
+        return redirect("/settings")
 
     @app.get("/", response_class=HTMLResponse)
     async def dashboard(request: Request):
@@ -723,6 +723,85 @@ def create_app():
                 "is_admin": current.get("role") == "admin",
                 "web_users": get_web_users() if current.get("role") == "admin" else [],
                 "all_accounts": get_userData(force_reload=True) if current.get("role") == "admin" else [],
+            },
+        )
+
+    @app.get("/accounts", response_class=HTMLResponse)
+    async def accounts_page(request: Request):
+        maybe_redirect = require_user(request)
+        if maybe_redirect:
+            return maybe_redirect
+
+        current = principal(request)
+        accounts = get_visible_accounts(current, get_userData(force_reload=True))
+        return render_template(
+            request,
+            "accounts.html",
+            {
+                "flash": pop_flash(request),
+                "accounts": accounts,
+                "is_admin": current.get("role") == "admin",
+            },
+        )
+
+    @app.get("/login-workspace", response_class=HTMLResponse)
+    async def login_workspace_page(request: Request):
+        maybe_redirect = require_user(request)
+        if maybe_redirect:
+            return maybe_redirect
+
+        return render_template(
+            request,
+            "login_workspace.html",
+            {
+                "flash": pop_flash(request),
+                "is_admin": bool(principal(request) and principal(request).get("role") == "admin"),
+            },
+        )
+
+    @app.get("/config", response_class=HTMLResponse)
+    async def config_page(request: Request):
+        maybe_redirect = require_admin(request)
+        if maybe_redirect:
+            return maybe_redirect
+
+        return render_template(
+            request,
+            "config.html",
+            {
+                "flash": pop_flash(request),
+                "runtime_config": get_config(force_reload=True),
+            },
+        )
+
+    @app.get("/ops", response_class=HTMLResponse)
+    async def ops_page(request: Request):
+        maybe_redirect = require_admin(request)
+        if maybe_redirect:
+            return maybe_redirect
+
+        return render_template(
+            request,
+            "ops.html",
+            {
+                "flash": pop_flash(request),
+                "ops": scoped_ops_snapshot(request),
+            },
+        )
+
+    @app.get("/settings", response_class=HTMLResponse)
+    async def settings_page(request: Request):
+        maybe_redirect = require_admin(request)
+        if maybe_redirect:
+            return maybe_redirect
+
+        return render_template(
+            request,
+            "settings.html",
+            {
+                "flash": pop_flash(request),
+                "web_users": get_web_users(),
+                "all_accounts": get_userData(force_reload=True),
             },
         )
 
@@ -766,7 +845,7 @@ def create_app():
         else:
             flash(request, "Account not found.", "error")
 
-        return redirect("/")
+        return redirect("/accounts")
 
     @app.post("/accounts/{unique_id}/toggle-enabled")
     async def toggle_account_enabled(request: Request, unique_id: str):
@@ -786,10 +865,10 @@ def create_app():
         save_userData(accounts)
         flash(
             request,
-            f"{account.get('username', 'Account')} 已{'启用' if account['enabled'] else '停用'}自动续火花。",
+            f"{account.get('username', 'Account')} {'启用' if account['enabled'] else '停用'}自动续火花。",
             "success",
         )
-        return redirect("/")
+        return redirect("/accounts")
 
     @app.post("/accounts/{unique_id}/friends/refresh")
     async def refresh_account_friend_list(request: Request, unique_id: str):
@@ -839,7 +918,7 @@ def create_app():
             flash(request, "Account deleted.", "success")
         else:
             flash(request, "Account not found.", "error")
-        return redirect("/")
+        return redirect("/accounts")
 
     @app.post("/accounts/{unique_id}/retry-target")
     async def retry_account_target(request: Request, unique_id: str):
@@ -1015,7 +1094,7 @@ def create_app():
         save_config(config)
 
         flash(request, "Runtime config saved.", "success")
-        return redirect("/")
+        return redirect("/config")
 
     @app.post("/settings")
     async def save_panel_settings(request: Request):
@@ -1042,11 +1121,11 @@ def create_app():
         if new_password:
             if new_password != confirm_password:
                 flash(request, "Admin password was not updated because the confirmation did not match.", "error")
-                return redirect("/")
+                return redirect("/settings")
             update_admin_password(new_password)
 
         flash(request, "Panel settings saved.", "success")
-        return redirect("/")
+        return redirect("/settings")
 
     @app.post("/ops/run-now")
     async def run_now(request: Request):
@@ -1120,7 +1199,7 @@ def create_app():
 
         refresh_proxy()
         flash(request, "Proxy subscription refreshed.", "success")
-        return redirect("/")
+        return redirect("/ops")
 
     @app.post("/ops/proxy/restart")
     async def proxy_restart(request: Request):
@@ -1134,7 +1213,7 @@ def create_app():
 
         restart_proxy()
         flash(request, "Proxy container restarted.", "success")
-        return redirect("/")
+        return redirect("/ops")
 
     @app.post("/ops/schedule")
     async def save_schedule(request: Request):
@@ -1152,7 +1231,7 @@ def create_app():
             flash(request, f"Updated the daily schedule to {time_string}.", "success")
         else:
             flash(request, f"Failed to update the daily schedule to {time_string}: {getattr(result, 'stderr', '')}", "error")
-        return redirect("/")
+        return redirect("/ops")
 
     @app.get("/ops/logs", response_class=HTMLResponse)
     async def logs_page(request: Request):

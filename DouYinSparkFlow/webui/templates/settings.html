@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+
+{% block nav_key %}settings{% endblock %}
+{% block page_key %}settings{% endblock %}
+{% block title %}系统设置{% endblock %}
+{% block breadcrumb_title %}系统设置{% endblock %}
+
+{% block content %}
+<div class="page-stack">
+  <section class="dashboard-section">
+    <details class="collapsible-section" open>
+      <summary><span class="summary-copy"><i data-lucide="user-plus"></i><span><strong>创建用户</strong><small>账号绑定可后续调整</small></span></span><i class="summary-chevron" data-lucide="chevron-down"></i></summary>
+      <div class="collapsible-body">
+        <form method="post" action="/admin/users/create" class="stack-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <div class="form-grid">
+            <label><span>用户名</span><input type="text" name="username" pattern="[A-Za-z0-9_.-]+" required></label>
+            <label><span>初始密码</span><input type="password" name="password" autocomplete="new-password" required></label>
+          </div>
+          <label class="check-row"><input type="checkbox" name="enabled" checked><span>允许登录</span></label>
+          <fieldset class="stack-form account-assignment-picker">
+            <legend>分配账号</legend>
+            <p class="muted compact">可多选；如果暂时不分配账号，保持全部未选即可。</p>
+            {% for account in all_accounts %}
+            <label class="check-row">
+              <input type="checkbox" name="account_refs" value="{{ account.account_ref }}">
+              <span>{{ account.username }}（{{ account.unique_id }}）</span>
+            </label>
+            {% else %}
+            <p class="muted compact">当前没有可分配的抖音账号。</p>
+            {% endfor %}
+          </fieldset>
+          <button class="button button-primary" type="submit"><i data-lucide="user-plus"></i><span>创建普通用户</span></button>
+        </form>
+      </div>
+    </details>
+    {% for web_user in web_users %}
+    <details class="collapsible-section">
+      <summary><span class="summary-copy"><span class="account-avatar">{{ (web_user.username or "U")[:1] }}</span><span><strong>{{ web_user.username }}</strong><small>{{ web_user.account_refs|length }} 个绑定账号</small></span></span><span class="status-chip {% if web_user.enabled %}success{% else %}warning{% endif %}">{% if web_user.enabled %}可登录{% else %}已停用{% endif %}</span><i class="summary-chevron" data-lucide="chevron-down"></i></summary>
+      <div class="collapsible-body">
+        <form method="post" action="/admin/users/{{ web_user.username }}/update" class="stack-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <div class="form-grid">
+            <label><span>用户名</span><input type="text" name="new_username" value="{{ web_user.username }}" pattern="[A-Za-z0-9_.-]+" required></label>
+            <label><span>重置密码（留空不修改）</span><input type="password" name="password" autocomplete="new-password"></label>
+          </div>
+          <label class="check-row"><input type="checkbox" name="enabled" {% if web_user.enabled %}checked{% endif %}><span>允许登录</span></label>
+          <fieldset class="stack-form account-assignment-picker">
+            <legend>绑定账号</legend>
+            <p class="muted compact">可多选；全部未选表示解除该用户的所有抖音账号绑定。</p>
+            {% for account in all_accounts %}
+            <label class="check-row">
+              <input type="checkbox" name="account_refs" value="{{ account.account_ref }}" {% if account.account_ref in web_user.account_refs %}checked{% endif %}>
+              <span>{{ account.username }}（{{ account.unique_id }}）</span>
+            </label>
+            {% else %}
+            <p class="muted compact">当前没有可分配的抖音账号。</p>
+            {% endfor %}
+          </fieldset>
+          <div class="form-actions"><button class="button button-primary" type="submit"><i data-lucide="save"></i><span>保存用户</span></button></div>
+        </form>
+        <form method="post" action="/admin/users/{{ web_user.username }}/delete" data-confirm-title="删除 Web 用户" data-confirm="只删除 Web 用户并解除账号绑定，不删除抖音账号数据。确认继续吗？" data-confirm-accept="确认删除">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="button button-danger" type="submit"><i data-lucide="trash-2"></i><span>删除用户</span></button>
+        </form>
+      </div>
+    </details>
+    {% endfor %}
+  </section>
+
+  <section class="panel">
+    <div style="padding: 18px 20px 22px;">
+      <form method="post" action="/settings" class="stack-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="form-grid">
+          <label><span>登录桌面 API</span><input type="text" name="login_desktop_api_url" value="{{ app_settings.login_desktop_api_url }}"></label>
+          <label><span>Web UI 端口</span><input type="number" min="1" max="65535" name="ui_port" value="{{ app_settings.ui_port }}"></label>
+        </div>
+        <div class="form-grid">
+          <label><span>修改管理员密码</span><input type="password" name="new_password" autocomplete="new-password" placeholder="留空表示不修改"></label>
+          <label><span>确认新密码</span><input type="password" name="confirm_password" autocomplete="new-password" placeholder="再次输入新密码"></label>
+        </div>
+        <button class="button button-primary" type="submit"><i data-lucide="save"></i><span>保存系统设置</span></button>
+      </form>
+    </div>
+  </section>
+
+  {% if not is_admin %}
+  <section class="panel">
+    <div style="padding: 18px 20px 22px;">
+      <form method="post" action="/account/password" class="stack-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="form-grid">
+          <label><span>新密码</span><input type="password" name="new_password" autocomplete="new-password" required></label>
+          <label><span>确认新密码</span><input type="password" name="confirm_password" autocomplete="new-password" required></label>
+        </div>
+        <button class="button button-primary" type="submit"><i data-lucide="save"></i><span>保存密码</span></button>
+      </form>
+    </div>
+  </section>
+  {% endif %}
+</div>
+{% endblock %}

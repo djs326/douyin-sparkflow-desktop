@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+
+{% block nav_key %}login_workspace{% endblock %}
+{% block page_key %}login-workspace{% endblock %}
+{% block title %}登录抖音账号{% endblock %}
+{% block breadcrumb_title %}登录抖音账号{% endblock %}
+
+{% block content %}
+<div
+  class="workspace-stack"
+  id="login-desktop-controls"
+  data-public-url="{{ login_desktop_public_url }}"
+  data-display-mode="{{ login_desktop_display_mode }}"
+  data-csrf-token="{{ csrf_token }}"
+>
+  <section class="workspace-status">
+    <span class="workspace-status-icon"><i data-lucide="scan-line"></i></span>
+    <div class="workspace-status-body">
+      <span class="pill" id="login-desktop-runtime-state">待检查</span>
+      <p class="workspace-status-text" id="login-desktop-status-text">正在检查登录桌面状态。</p>
+    </div>
+  </section>
+
+  <section class="workspace-actions">
+    <button class="button button-primary login-desktop-open" type="button" data-login-mode="add">
+      <i data-lucide="user-plus"></i><span>添加新的抖音账号</span>
+    </button>
+    <button class="button button-soft login-desktop-save" type="button" data-relogin-unique-id="" data-login-mode="add">
+      <i data-lucide="save"></i><span>保存新账号登录</span>
+    </button>
+    <button
+      class="button button-quiet login-desktop-close"
+      type="button"
+      data-confirm-title="关闭登录界面"
+      data-confirm="当前未保存的登录过程会被关闭，登录界面会恢复初始状态。确认继续吗？"
+      data-confirm-accept="确认关闭"
+    >
+      <i data-lucide="x-circle"></i><span>关闭登录界面</span>
+    </button>
+    {% if is_admin %}
+    <button
+      class="button button-quiet login-desktop-reset"
+      type="button"
+      data-confirm-title="强制重置登录工作区"
+      data-confirm="会清理当前登录环境并切换队列中的下一位用户。确认继续吗？"
+      data-confirm-accept="确认重置"
+    >
+      <i data-lucide="rotate-ccw"></i><span>强制重置工作区</span>
+    </button>
+    {% endif %}
+    <button class="button button-quiet" type="button" data-copy-login-url>
+      <i data-lucide="copy"></i><span>复制地址</span>
+    </button>
+  </section>
+
+  <div class="workspace-grid">
+    <section class="panel">
+      <div class="qr-panel">
+        <div class="qr-panel-head">
+          <span class="qr-panel-title"><i data-lucide="smartphone"></i>手机扫码登录</span>
+          <span class="pill">大图二维码</span>
+        </div>
+        <img class="login-qr-image" data-login-qr alt="抖音登录二维码" hidden>
+        <p class="muted compact" data-login-qr-status>点击“添加新的抖音账号”后会在这里显示大图二维码。</p>
+        <div class="button-row">
+          <button class="button button-soft" type="button" data-refresh-login-qr>
+            <i data-lucide="refresh-cw"></i><span>刷新二维码</span>
+          </button>
+          <a class="button button-quiet" href="/login-desktop/qr" target="_blank" rel="noopener">
+            <i data-lucide="maximize-2"></i><span>单独打开二维码</span>
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="desktop-frame-wrap">
+        <div class="native-login-panel" data-native-login hidden>
+          <i data-lucide="monitor-up"></i>
+          <strong>Windows 本地登录浏览器已启动</strong>
+          <p class="muted compact">请在本机弹出的 Chromium 窗口中完成抖音扫码。扫码完成后回到这里点击“保存新账号登录”。</p>
+          <button class="button button-primary" type="button" data-focus-native-browser>
+            <i data-lucide="focus"></i><span>显示登录浏览器</span>
+          </button>
+        </div>
+        <iframe
+          class="desktop-frame"
+          data-login-frame
+          data-src="{{ login_desktop_public_url }}"
+          title="交互式登录浏览器"
+        ></iframe>
+      </div>
+    </section>
+  </div>
+
+  <p class="workspace-hint">
+    <i data-lucide="info"></i>
+    已有抖音账号请从「账号管理」页对应账号卡片点击“重新登录”；“添加新的抖音账号”会将新账号自动绑定到当前用户。
+  </p>
+</div>
+{% endblock %}
