@@ -51,6 +51,14 @@ def _normalize_send_strategy(config):
     return strategy
 
 
+class _ProtocolPartialResultError(RuntimeError):
+    """协议发送器中途失败：携带失败前已发送的部分收据（防重复发送）。"""
+
+    def __init__(self, message, partial):
+        super().__init__(message)
+        self.partial = partial
+
+
 def _account_identity_key(account):
     normalized_unique_id = normalize_unique_id(account.get("unique_id"))
     if normalized_unique_id:
@@ -142,7 +150,7 @@ def _record_protocol_target_failure(target_account, target_name, message, catego
     target_account["failure_queue"] = queue
 
 
-def _merge_protocol_runtime_state(accounts, result_by_username):
+def _merge_protocol_runtime_state(accounts, result_by_identity):
     changed = False
     now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
     all_accounts = get_userData(force_reload=True)
@@ -158,7 +166,7 @@ def _merge_protocol_runtime_state(accounts, result_by_username):
         if not target_account:
             continue
 
-        result = result_by_username.get(account.get("username"))
+        result = result_by_identity.get(_account_identity_key(account))
         if not result:
             continue
 
@@ -240,14 +248,21 @@ def _run_protocol_for_user(user, messages_by_target, dry_run, send_strategy):
         "messagesByTarget": messages_by_target,
         "sendStrategy": send_strategy,
     }
-    process = subprocess.run(
-        command,
-        input=json.dumps(payload, ensure_ascii=False),
-        text=True,
-        capture_output=True,
-        cwd=str(cwd),
-        check=False,
-    )
+    try:
+        process = subprocess.run(
+            command,
+            input=json.dumps(payload, ensure_ascii=False),
+            text=True,
+            encoding="utf-8",
+            capture_output=True,
+            cwd=str(cwd),
+            check=False,
+            timeout=600,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"protocol sender timed out after 600s for {user.get('username', 'unknown')}"
+        ) from exc
 
     stdout = (process.stdout or "").strip()
     if not stdout:
@@ -264,8 +279,9 @@ def _run_protocol_for_user(user, messages_by_target, dry_run, send_strategy):
 
     if process.returncode != 0 or not data.get("ok"):
         error_message = data.get("error") or process.stderr or "protocol sender failed"
-        raise RuntimeError(
-            f"{user.get('username', 'unknown')} protocol sender failed: {error_message}"
+        raise _ProtocolPartialResultError(
+            f"{user.get('username', 'unknown')} protocol sender failed: {error_message}",
+            data,
         )
 
     data["runner"] = runner_label
@@ -341,11 +357,23 @@ async def run_protocol_tasks(config, accounts, message_builder):
 
     gathered = await asyncio.gather(*(_worker(user) for user in accounts), return_exceptions=True)
 
-    result_by_username = {}
+    result_by_identity = {}
     failures = []
     for user, item in zip(accounts, gathered):
         if isinstance(item, Exception):
             reason = str(item)
+            partial = getattr(item, "partial", None)
+            if isinstance(partial, dict) and partial.get("sent"):
+                # 失败前已真实送达的目标必须落账，否则下一轮会重复发送
+                _merge_protocol_runtime_state(
+                    [user],
+                    {_account_identity_key(user): partial},
+                )
+                logger.warning(
+                    "Merged %s partial send receipts for %s before recording failure",
+                    len(partial.get("sent") or []),
+                    user.get("username", "unknown"),
+                )
             failures.append(reason)
             logger.error("Protocol sender failed for %s: %s", user.get("username", "unknown"), item)
             _persist_protocol_account_failure(
@@ -355,7 +383,7 @@ async def run_protocol_tasks(config, accounts, message_builder):
                 user.get("targets", []),
             )
             continue
-        result_by_username[user.get("username")] = item
+        result_by_identity[_account_identity_key(user)] = item
         unresolved = item.get("unresolved", [])
         if unresolved:
             logger.warning(
@@ -365,9 +393,13 @@ async def run_protocol_tasks(config, accounts, message_builder):
                 [entry.get("target") for entry in unresolved],
             )
 
-    _merge_protocol_runtime_state(accounts, result_by_username)
+    _merge_protocol_runtime_state(accounts, result_by_identity)
 
-    if failures and not result_by_username:
+    if failures and not result_by_identity:
         raise RuntimeError("; ".join(failures))
 
-    return [result_by_username[user.get("username")] for user in accounts if user.get("username") in result_by_username]
+    return [
+        result_by_identity[_account_identity_key(user)]
+        for user in accounts
+        if _account_identity_key(user) in result_by_identity
+    ]

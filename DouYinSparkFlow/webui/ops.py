@@ -23,6 +23,7 @@ from utils.config import (
     save_config,
 )
 from utils.logger import read_text_autodetect
+from utils.process import pid_is_alive
 
 logger = logging.getLogger(__name__)
 
@@ -96,19 +97,8 @@ def compose_command(*args):
 
 
 def _pid_is_alive(pid):
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError as exc:
-        if getattr(exc, "winerror", None) == 87 or exc.errno == errno.ESRCH:
-            return False
-        if exc.errno in (errno.EPERM, errno.EACCES):
-            return True
-        raise
-    return True
+    """跨平台安全存活探测（见 utils/process.py；Windows 上 os.kill(pid,0) 会广播 Ctrl+C）。"""
+    return pid_is_alive(pid)
 
 
 def _parse_lock_pid(raw):
@@ -565,7 +555,10 @@ def persist_schedule_config(time_string):
 
 
 def update_daily_schedule(time_string):
-    persist_schedule_config(time_string)
+    try:
+        persist_schedule_config(time_string)
+    except ValueError as exc:
+        return _empty_result(stderr=f"invalid schedule: {exc}")
     # Windows 桌面版没有 crontab：定时由应用内 dailySendWindow 调度器负责，
     # 配置已写入 config.json，直接返回成功。
     if os.name == "nt":

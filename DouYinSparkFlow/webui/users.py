@@ -10,12 +10,18 @@ import uuid
 from copy import deepcopy
 from pathlib import Path
 
-from utils.config import get_app_settings, get_userData, normalize_unique_id, save_userData
+from utils.config import data_dir, get_app_settings, get_userData, normalize_unique_id, save_userData
 from webui.auth import hash_password, verify_password
 
 
-USERS_FILE = Path(__file__).resolve().parents[1] / "webui_users.json"
+# 用户数据存放在运行时数据目录（打包版安装目录只读，写仓库根目录会失败）。
+# 兼容迁移：旧位置（仓库根）存在且新位置不存在时读取并迁移一次。
+LEGACY_USERS_FILE = Path(__file__).resolve().parents[1] / "webui_users.json"
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+
+
+def _users_file():
+    return data_dir() / "webui_users.json"
 
 
 class UserStoreError(ValueError):
@@ -44,9 +50,22 @@ def _atomic_write_json(path: Path, payload: object) -> None:
 
 
 def _load_raw() -> dict:
-    if not USERS_FILE.exists():
-        return {"users": []}
-    text = USERS_FILE.read_text(encoding="utf-8")
+    users_file = _users_file()
+    if users_file.exists():
+        return _parse_users_file(users_file)
+    if LEGACY_USERS_FILE.exists() and LEGACY_USERS_FILE.resolve() != users_file.resolve():
+        data = _parse_users_file(LEGACY_USERS_FILE)
+        # 迁移到运行时数据目录；旧位置只读时保留原地读取
+        try:
+            _atomic_write_json(users_file, data)
+        except OSError:
+            pass
+        return data
+    return {"users": []}
+
+
+def _parse_users_file(path: Path) -> dict:
+    text = path.read_text(encoding="utf-8")
     if not text.strip():
         return {"users": []}
     data = json.loads(text)
@@ -108,9 +127,10 @@ def save_web_users(users: list[dict]) -> list[dict]:
                 "account_refs": refs,
             }
         )
-    _atomic_write_json(USERS_FILE, {"users": normalized})
+    users_file = _users_file()
+    _atomic_write_json(users_file, {"users": normalized})
     try:
-        os.chmod(USERS_FILE, 0o600)
+        os.chmod(users_file, 0o600)
     except OSError:
         pass
     return deepcopy(normalized)

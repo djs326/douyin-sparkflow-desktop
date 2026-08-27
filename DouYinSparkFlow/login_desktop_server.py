@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 import os
 import shutil
 import time
@@ -13,7 +14,8 @@ from playwright.async_api import async_playwright
 
 from core.browser import configure_playwright_environment
 from core.login import collect_login_result
-from utils.config import Environment, data_dir, get_environment
+from utils.config import Environment, data_dir, get_environment, login_desktop_auth_token
+from utils.web_middleware import localhost_only_middleware
 
 # 打包版必须指向 exe 旁的 chrome\ 目录，否则 Playwright 找不到内置 Chromium
 configure_playwright_environment()
@@ -698,6 +700,23 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="Douyin Login Desktop", lifespan=lifespan)
 
+# 本服务可导出完整抖音 cookies 并远程操控登录浏览器，必须做访问控制：
+# 1) 所有端点要求携带共享 token（launcher 与 webui 经同一 data_dir 自动互通）
+# 2) 拒绝非本机 Host 头（防 DNS rebinding）
+AUTH_TOKEN = login_desktop_auth_token()
+
+
+@app.middleware("http")
+async def _auth_and_host_guard(request: Request, call_next):
+    if request.url.path != "/health" and not _request_authorized(request):
+        return Response("Forbidden: missing or invalid auth token", status_code=403)
+    return await localhost_only_middleware(request, call_next)
+
+
+def _request_authorized(request: Request) -> bool:
+    supplied = request.headers.get("X-Login-Desktop-Token", "")
+    return bool(supplied) and hmac.compare_digest(supplied, AUTH_TOKEN)
+
 
 @app.get("/health")
 async def health():
@@ -987,4 +1006,12 @@ async def get_net_log():
     return {"count": len(_net_log), "capturing": _net_capturing, "log": _net_log.copy()}
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("LOGIN_DESKTOP_API_PORT", "18090")), reload=False)
+    # 只绑定本机回环地址：本服务可导出 cookies，绝不可暴露到局域网。
+    # token 落在 data_dir()/state/login_desktop_auth.token，webui 自动读取。
+    print(
+        f"[login_desktop_server] auth token: {AUTH_TOKEN}\n"
+        f"[login_desktop_server] webui 通过共享数据目录自动携带该 token；"
+        f"外部调用需请求头 X-Login-Desktop-Token。",
+        flush=True,
+    )
+    uvicorn.run(app, host="127.0.0.1", port=int(os.getenv("LOGIN_DESKTOP_API_PORT", "18090")), reload=False)

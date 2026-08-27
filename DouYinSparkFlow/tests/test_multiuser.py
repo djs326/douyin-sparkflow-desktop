@@ -18,7 +18,7 @@ class MultiUserTests(unittest.TestCase):
             {"account_ref": "acc-2", "username": "你成功捕捉一只野生妖孽", "unique_id": "222", "targets": [], "enabled": True},
             {"account_ref": "acc-3", "username": "管理员账号", "unique_id": "333", "targets": [], "enabled": True},
         ]
-        self.user_file_patch = patch.object(users, "USERS_FILE", self.users_path)
+        self.user_file_patch = patch.object(users, "_users_file", return_value=self.users_path)
         self.user_file_patch.start()
         self.ensure_patch = patch.object(users, "get_userData", return_value=self.accounts)
         self.ensure_patch.start()

@@ -158,7 +158,14 @@ async def get_browser(GUI=False, network_mode=None):
 
     try:
         playwright = await async_playwright().start()
-        browser = await playwright.chromium.launch(**_browser_launch_options(GUI, network_mode=network_mode))
+        try:
+            browser = await playwright.chromium.launch(**_browser_launch_options(GUI, network_mode=network_mode))
+        except Exception:
+            try:
+                await playwright.stop()
+            except Exception:
+                pass
+            raise
         return playwright, browser
     except Exception as exc:
         if "Executable doesn't exist" in str(exc) and get_environment() != Environment.GITHUBACTION:
@@ -179,10 +186,18 @@ async def get_persistent_browser_context(profile_name, GUI=False, root=None, net
         playwright = await async_playwright().start()
         launch_options = _browser_launch_options(GUI, network_mode=network_mode)
         launch_options["viewport"] = {"width": 1600, "height": 1000}
-        context = await playwright.chromium.launch_persistent_context(
-            str(profile_dir),
-            **launch_options,
-        )
+        try:
+            context = await playwright.chromium.launch_persistent_context(
+                str(profile_dir),
+                **launch_options,
+            )
+        except Exception:
+            # launch 失败（如 profile 被残留 Chromium 占用）时回收 driver 实例，避免泄漏
+            try:
+                await playwright.stop()
+            except Exception:
+                pass
+            raise
         return playwright, context, profile_dir
     except Exception as exc:
         if "Executable doesn't exist" in str(exc) and get_environment() != Environment.GITHUBACTION:

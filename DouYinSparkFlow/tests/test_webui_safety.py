@@ -1,5 +1,4 @@
 import asyncio
-import errno
 import os
 import tempfile
 import time
@@ -29,12 +28,15 @@ class WebUiSafetyTests(unittest.TestCase):
             pass
 
     def test_windows_invalid_pid_probe_is_treated_as_dead(self):
-        error = OSError(errno.EINVAL, "invalid pid")
-        error.winerror = 87
-        with patch.object(ops.os, "kill", side_effect=error):
-            self.assertFalse(ops._pid_is_alive(999999))
-        with patch.object(tasks.os, "kill", side_effect=error):
-            self.assertFalse(tasks._pid_is_alive(999999))
+        self.assertFalse(ops._pid_is_alive(999999))
+        self.assertFalse(tasks._pid_is_alive(999999))
+
+    def test_live_pid_probe_returns_true_without_side_effects(self):
+        # Windows 上旧实现 os.kill(pid, 0) 的 sig=0 即 CTRL_C_EVENT，会向
+        # 同控制台广播 Ctrl+C（曾杀死宿主进程，见 OSKILL-PROBE-BUG.md）；
+        # 修复后探测存活 PID（含自己）必须安全且返回 True。
+        self.assertTrue(ops._pid_is_alive(os.getpid()))
+        self.assertTrue(tasks._pid_is_alive(os.getpid()))
 
     def test_missing_optional_runtime_tools_do_not_log_warnings(self):
         with (
@@ -320,7 +322,17 @@ class WebUiSafetyTests(unittest.TestCase):
         self.assertEqual("no-store", response.headers["cache-control"])
 
         with (
-            patch.object(app_module, "current_user", return_value="admin"),
+            patch.object(
+                app_module,
+                "current_principal",
+                return_value={
+                    "username": "admin",
+                    "role": "admin",
+                    "account_refs": [],
+                    "session_id": "s1",
+                    "enabled": True,
+                },
+            ),
             patch.object(
                 app_module,
                 "get_overview_snapshot",
@@ -336,6 +348,19 @@ class WebUiSafetyTests(unittest.TestCase):
             response = client.get("/api/ops/overview")
 
         self.assertEqual(200, response.status_code)
+        self.assertEqual("no-store", response.headers["cache-control"])
+
+    def test_overview_api_rejects_disabled_user_sessions(self):
+        client = TestClient(app_module.app)
+        # 被禁用用户的会话：current_principal 返回 None（会话存在但主体无效），
+        # overview 不得回退为全量数据（曾因此绕过账号权限隔离）
+        with (
+            patch.object(app_module, "current_user", return_value="disabled_user"),
+            patch.object(app_module, "current_principal", return_value=None),
+        ):
+            response = client.get("/api/ops/overview")
+
+        self.assertEqual(401, response.status_code)
         self.assertEqual("no-store", response.headers["cache-control"])
 
     def test_public_settings_and_template_do_not_expose_server_password(self):

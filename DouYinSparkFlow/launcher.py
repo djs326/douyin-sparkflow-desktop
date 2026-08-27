@@ -26,6 +26,7 @@ from pathlib import Path
 import uvicorn
 
 from utils.config import Environment, data_dir, get_environment
+from utils.process import pid_is_alive
 
 APP_TITLE = "DouYin SparkFlow"
 WEB_HOST = "127.0.0.1"
@@ -33,6 +34,7 @@ WEB_PORT = 8787
 LOGIN_DESKTOP_HOST = "127.0.0.1"
 LOGIN_DESKTOP_PORT = 18090
 STARTUP_TIMEOUT_SECONDS = 60
+LOGIN_DESKTOP_START_TIMEOUT_SECONDS = 45
 LOGIN_DESKTOP_START_DELAY_SECONDS = 0.5
 
 logger = logging.getLogger("launcher")
@@ -58,34 +60,12 @@ def _setup_logging():
 
 
 def _pid_is_alive(pid: int) -> bool:
-    """探测进程是否存活。
+    """探测进程是否存活（跨平台安全实现，见 utils/process.py）。
 
-    Windows 上对不存在的 PID 调用 os.kill(pid, 0) 会抛 OSError：
-    - WinError 87（参数错误）＝ 进程不存在
-    - WinError 6（句柄无效）＝ 进程句柄无效/已退出
     无法探测时返回 False（宁可误启动，最终由 8787 端口占用兜底，
     也绝不让残留锁导致程序静默无法启动）。
     """
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError as exc:
-        winerror = getattr(exc, "winerror", None)
-        if winerror in (6, 87) or exc.errno in (errno.ESRCH, errno.EINVAL):
-            return False
-        if exc.errno in (errno.EPERM, errno.EACCES):
-            return True
-        logger.debug("PID %s liveness probe failed unexpectedly: %r", pid, exc)
-        return False
-    except SystemError as exc:
-        # 打包版（PyInstaller）对失效 PID 的 os.kill 偶发抛 SystemError
-        # （"returned a result with an exception set"）而非 OSError。
-        logger.debug("PID %s liveness probe raised SystemError: %r", pid, exc)
-        return False
-    return True
+    return pid_is_alive(pid)
 
 
 def ensure_data_dirs() -> Path:
@@ -96,24 +76,55 @@ def ensure_data_dirs() -> Path:
 
 
 def acquire_single_instance(root: Path):
-    """数据目录 ``state/instance.lock`` 记录 PID；已有存活实例则直接退出。
+    """数据目录 ``state/instance.lock`` 原子创建（O_CREAT|O_EXCL）；已有存活实例则退出。
 
     锁文件异常（残留、损坏、不可写）一律不阻止程序启动——
     宁可放行，靠 8787 端口占用兜底防双实例。
     """
     lock = root / "state" / "instance.lock"
-    try:
-        if lock.exists():
+    for _attempt in range(3):
+        try:
+            fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(str(os.getpid()))
+            return lock
+        except FileExistsError:
+            pass
+        except OSError as exc:  # noqa: BLE001 - 锁失败不应导致程序无法启动
+            logger.warning("Instance lock handling failed (%s), continuing anyway", exc)
+            return lock
+
+        old_pid = None
+        try:
+            raw = lock.read_text(encoding="utf-8").strip()
+            if raw:
+                old_pid = int(raw)
+        except (ValueError, OSError):
+            old_pid = None
+
+        if old_pid is None:
+            # 空内容：另一实例刚原子创建锁但尚未写入 PID，视为正在启动
             try:
-                old_pid = int(lock.read_text(encoding="utf-8").strip())
-            except (ValueError, OSError):
-                old_pid = None
-            if old_pid and old_pid != os.getpid() and _pid_is_alive(old_pid):
-                logger.info("Another instance is already running (pid=%s), exiting.", old_pid)
+                age = time.time() - lock.stat().st_mtime
+            except OSError:
+                age = 0
+            if age < 10:
+                logger.info("Another instance is starting (fresh lock), exiting.")
                 sys.exit(0)
-        lock.write_text(str(os.getpid()), encoding="utf-8")
-    except Exception as exc:  # noqa: BLE001 - 锁失败不应导致程序无法启动
-        logger.warning("Instance lock handling failed (%s), continuing anyway", exc)
+            try:
+                lock.unlink()
+            except FileNotFoundError:
+                pass
+            continue
+
+        if old_pid != os.getpid() and _pid_is_alive(old_pid):
+            logger.info("Another instance is already running (pid=%s), exiting.", old_pid)
+            sys.exit(0)
+        logger.info("Removing stale instance lock owned by dead pid=%s", old_pid)
+        try:
+            lock.unlink()
+        except FileNotFoundError:
+            pass
     return lock
 
 
@@ -180,8 +191,14 @@ def run_web_thread():
 
 def start_login_desktop_server():
     time.sleep(LOGIN_DESKTOP_START_DELAY_SECONDS)
-    os.environ.setdefault("LOGIN_DESKTOP_MODE", "native")
+    # 桌面版固定 native 模式：用户残留的 LOGIN_DESKTOP_MODE=novnc 会让
+    # 登录页走容器 noVNC 路径而白屏，这里必须覆盖而非 setdefault。
+    os.environ["LOGIN_DESKTOP_MODE"] = "native"
     os.environ.setdefault("LOGIN_DESKTOP_API_PORT", str(LOGIN_DESKTOP_PORT))
+    # 确保认证 token 已生成（webui 与登录服务共享同一数据目录自动互通）
+    from utils.config import login_desktop_auth_token
+
+    login_desktop_auth_token()
     import login_desktop_server
 
     config = uvicorn.Config(
@@ -358,26 +375,73 @@ def _main():
 
     if not wait_for_port(WEB_HOST, WEB_PORT, STARTUP_TIMEOUT_SECONDS):
         logger.error("Web console failed to start within %ss", STARTUP_TIMEOUT_SECONDS)
+        stop_all_servers()
         release_single_instance(lock)
         sys.exit(1)
-    logger.info("Web console ready, opening window…")
+    logger.info("Web console ready on http://%s:%s", WEB_HOST, WEB_PORT)
 
-    import webview  # pywebview 延迟导入，避免无窗口环境（CI/测试）启动失败
+    if not wait_for_port(LOGIN_DESKTOP_HOST, LOGIN_DESKTOP_PORT, LOGIN_DESKTOP_START_TIMEOUT_SECONDS):
+        logger.error(
+            "Login desktop service failed to start within %ss — QR login will be unavailable",
+            LOGIN_DESKTOP_START_TIMEOUT_SECONDS,
+        )
 
-    webview.create_window(
-        APP_TITLE,
-        f"http://{WEB_HOST}:{WEB_PORT}",
-        width=1280,
-        height=820,
-        min_size=(960, 620),
-        js_api=Api(),
-    )
-    webview.start()
+    try:
+        import webview  # pywebview 延迟导入，避免无窗口环境（CI/测试）启动失败
+    except Exception:
+        logger.exception("pywebview unavailable, falling back to browser mode")
+        _fallback_browser_mode(lock)
+        return
+
+    try:
+        webview.create_window(
+            APP_TITLE,
+            f"http://{WEB_HOST}:{WEB_PORT}",
+            width=1280,
+            height=820,
+            min_size=(960, 620),
+            js_api=Api(),
+        )
+        webview.start()
+    except Exception:
+        logger.exception("pywebview window failed, falling back to browser mode")
+        _fallback_browser_mode(lock)
+        return
 
     logger.info("Window closed, shutting down services…")
     stop_all_servers()
+    _join_server_threads(web_thread, login_thread)
     release_single_instance(lock)
     sys.exit(0)
+
+
+def _fallback_browser_mode(lock: Path):
+    """pywebview 不可用（如缺 WebView2 运行时）时打开系统浏览器，保持双服务运行。"""
+    import webbrowser
+
+    logger.info("Browser fallback: open http://%s:%s", WEB_HOST, WEB_PORT)
+    try:
+        webbrowser.open(f"http://{WEB_HOST}:{WEB_PORT}")
+    except Exception:
+        pass
+    stop_event = threading.Event()
+    try:
+        while not stop_event.wait(3600):
+            pass
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop_all_servers()
+        release_single_instance(lock)
+
+
+def _join_server_threads(web_thread: threading.Thread, login_thread: threading.Thread, timeout: float = 10):
+    """等待 uvicorn 线程退出，让 lifespan finally（关闭 Chromium）有机会执行。"""
+    for thread in (web_thread, login_thread):
+        if thread.is_alive():
+            thread.join(timeout)
+            if thread.is_alive():
+                logger.warning("Service thread '%s' did not stop within %ss", thread.name, timeout)
 
 
 if __name__ == "__main__":

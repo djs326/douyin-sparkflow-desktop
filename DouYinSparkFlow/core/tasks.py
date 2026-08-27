@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import random
+import time
 import unicodedata
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -22,12 +23,13 @@ from core.browser import (
 from core.msg_builder import build_message, build_message_candidates
 from core.protocol_dispatch import run_protocol_tasks
 from core.send_state import parse_sent_at, target_is_strong_confirmed_today
-from utils.config import get_config, get_userData, normalize_unique_id, save_userData
+from utils.config import data_dir, get_config, get_userData, normalize_unique_id, save_userData
 from utils.logger import setup_logger
+from utils.process import pid_is_alive
 
 
 logger = setup_logger(level=logging.DEBUG)
-debug_artifacts_dir = Path("logs/debug_artifacts")
+debug_artifacts_dir = data_dir() / "logs" / "debug_artifacts"
 debug_artifacts_dir.mkdir(parents=True, exist_ok=True)
 CREATOR_HOME_URL = "https://creator.douyin.com/"
 CREATOR_CHAT_URL = "https://creator.douyin.com/creator-micro/data/following/chat"
@@ -2237,19 +2239,8 @@ def _split_sender_modes(active_config, runnable_user_data):
 
 
 def _pid_is_alive(pid):
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError as exc:
-        if getattr(exc, "winerror", None) == 87 or exc.errno == errno.ESRCH:
-            return False
-        if exc.errno in (errno.EPERM, errno.EACCES):
-            return True
-        raise
-    return True
+    """跨平台安全存活探测（见 utils/process.py；Windows 上 os.kill(pid,0) 会广播 Ctrl+C）。"""
+    return pid_is_alive(pid)
 
 
 def _extract_lock_pid(raw):
@@ -2279,7 +2270,7 @@ def _browser_account_lock_is_stale(lock_path, raw):
 
 
 async def _acquire_browser_account_lock(user, account_name):
-    lock_dir = Path("logs/browser-account-locks")
+    lock_dir = data_dir() / "logs" / "browser-account-locks"
     lock_dir.mkdir(parents=True, exist_ok=True)
     identity = _account_identity(user) or account_name
     lock_path = lock_dir / f"{_safe_name(identity)}.lock"
@@ -2327,14 +2318,24 @@ async def _acquire_browser_account_lock(user, account_name):
 
 
 def _release_browser_account_lock(handle, lock_path, account_name):
+    """释放账号锁（ABA 防护：内容不属于自己时绝不删除他人重建的锁）。"""
     try:
         handle.close()
     finally:
         try:
+            raw = lock_path.read_text(encoding="utf-8", errors="ignore")
+            if f"pid={os.getpid()}" not in raw:
+                logger.warning(
+                    "Refusing to remove browser account lock %s: contents belong to someone else",
+                    lock_path,
+                )
+                return
             lock_path.unlink()
             logger.debug("Released browser account lock for %s at %s", account_name, lock_path)
         except FileNotFoundError:
             pass
+        except OSError as exc:
+            logger.warning("Failed to remove browser account lock %s: %s", lock_path, exc)
 
 
 def _browser_account_timeout_seconds(friend_scan_config, target_count):
@@ -2380,7 +2381,7 @@ async def run_browser_tasks(active_config, browser_user_data):
                 len(user["targets"]),
             )
             tasks.append(do_user_task(None, user, semaphore, send_strategy, profile_config, friend_scan_config, network_mode))
-        await asyncio.gather(*tasks)
+        await _gather_account_tasks(tasks, browser_user_data)
         return
 
     playwright, browser = await get_browser(network_mode=network_mode)
@@ -2393,10 +2394,27 @@ async def run_browser_tasks(active_config, browser_user_data):
             )
             tasks.append(do_user_task(browser, user, semaphore, send_strategy, profile_config, friend_scan_config, network_mode))
 
-        await asyncio.gather(*tasks)
+        await _gather_account_tasks(tasks, browser_user_data)
     finally:
         await playwright.stop()
         await browser.close()
+
+
+async def _gather_account_tasks(tasks, users):
+    """并行执行各账号任务；单账号异常只记录、不拖垮整轮其他账号。"""
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for user, result in zip(users, results):
+        if isinstance(result, asyncio.CancelledError):
+            logger.warning(
+                "Account task cancelled for %s",
+                user.get("username", "unknown"),
+            )
+        elif isinstance(result, Exception):
+            logger.error(
+                "Account task failed for %s: %s",
+                user.get("username", "unknown"),
+                result,
+            )
 
 
 async def do_user_task(browser, user, semaphore, send_strategy, profile_config, friend_scan_config, network_mode):
@@ -2433,6 +2451,19 @@ async def do_user_task(browser, user, semaphore, send_strategy, profile_config, 
                 reason = f"browser sender exceeded {timeout_seconds}s timeout guard"
                 logger.exception("Account %s browser sender timed out", account_name)
                 for target_name in user.get("targets") or []:
+                    # 抢救逻辑（_do_user_task_locked 的 CancelledError 分支）可能已确认
+                    # 最后一条消息今日发送成功；已强确认的目标不得再记失败（否则重复发送）。
+                    if target_is_strong_confirmed_today(
+                        user,
+                        target_name,
+                        datetime.now(_schedule_timezone()),
+                    ):
+                        logger.warning(
+                            "Skipping timeout failure for %s/%s: already strongly confirmed today",
+                            account_name,
+                            target_name,
+                        )
+                        continue
                     _persist_browser_send_failure(
                         user,
                         target_name,
@@ -2513,6 +2544,7 @@ async def _do_user_task_locked(browser, user, send_strategy, profile_config, fri
             return
 
         logger.info("Account %s started the message flow", account_name)
+        pending_confirmation = None
         try:
             index_targets = targets
             last_message = ""
@@ -2576,12 +2608,14 @@ async def _do_user_task_locked(browser, user, send_strategy, profile_config, fri
                     logger.info("Pressing Enter to send message for %s/%s", account_name, target_name)
                     await chat_input.press("Enter")
 
+                    pending_confirmation = (target_name, message, chat_input, last_own_message_before)
                     sent_ok, detail = await confirm_message_sent(
                         page,
                         chat_input,
                         message,
                         before_snapshot=last_own_message_before,
                     )
+                    pending_confirmation = None
                     im_summary = await im_observer_summary()
                     logger.info(
                         "IM send observer summary for %s/%s: request=%s response=%s events=%s error=%s",
@@ -2693,6 +2727,43 @@ async def _do_user_task_locked(browser, user, send_strategy, profile_config, fri
                         "messageIntervalSecondsMax",
                     )
                     await _sleep_with_log(interval, "Delaying next browser message after failure", account_name)
+        except asyncio.CancelledError:
+            # 超时守卫取消本任务：最后一条消息可能已按 Enter 发出但尚未确认。
+            # 用短超时快速抢救检测，确认成功则记录，避免下一轮重复发送。
+            if pending_confirmation:
+                target_name, message, chat_input, before_snapshot = pending_confirmation
+                try:
+                    sent_ok, detail = await asyncio.wait_for(
+                        detect_message_already_sent(
+                            page,
+                            chat_input,
+                            message,
+                            before_snapshot=before_snapshot,
+                        ),
+                        timeout=10,
+                    )
+                except Exception as detect_exc:
+                    logger.warning(
+                        "Timeout rescue detection failed for %s/%s: %s",
+                        account_name,
+                        target_name,
+                        detect_exc,
+                    )
+                else:
+                    if sent_ok:
+                        logger.warning(
+                            "Rescued send outcome for %s/%s after timeout: %s",
+                            account_name,
+                            target_name,
+                            detail,
+                        )
+                        _persist_browser_send_success(
+                            user,
+                            target_name,
+                            message,
+                            datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        )
+            raise
         except Exception as exc:
             remaining_targets = [target for target in targets if target not in yielded_targets]
             attempted_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -2782,16 +2853,32 @@ class TaskRunAlreadyInProgress(RuntimeError):
 
 @contextmanager
 def task_run_lock():
-    lock_path = Path("logs/task.run.lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    """全局任务运行锁（路径与 webui 查询端一致，经 data_dir() 解析）。
+
+    - 等待锁释放有超时（避免永久挂起的子进程）；
+    - 只读数据目录下创建失败时降级放行（宁可重复运行，不让任务崩溃）；
+    - 释放时校验内容（ABA 防护：不误删他人重建的锁）。
+    """
+    lock_path = data_dir() / "logs" / "task.run.lock"
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.warning("Cannot create task lock directory %s (%s); running without lock", lock_path.parent, exc)
+        yield
+        return
 
     def _lock_owner_is_alive(pid):
         return _pid_is_alive(pid)
 
+    started_at = time.monotonic()
     while True:
         try:
             handle = lock_path.open("x", encoding="utf-8")
             break
+        except PermissionError as exc:
+            logger.warning("Task lock path is not writable (%s); running without lock", lock_path)
+            yield
+            return
         except FileExistsError as exc:
             raw_pid = lock_path.read_text(encoding="utf-8", errors="ignore").strip()
             stale_pid = None
@@ -2816,7 +2903,11 @@ def task_run_lock():
                     pass
                 continue
 
-            raise TaskRunAlreadyInProgress("another task run is already in progress") from exc
+            if time.monotonic() - started_at > 1800:
+                raise TaskRunAlreadyInProgress(
+                    f"another task run has been in progress for over 30 minutes (pid={stale_pid})"
+                ) from exc
+            time.sleep(2)
 
     try:
         handle.write(f"{os.getpid()}\n")
@@ -2825,6 +2916,15 @@ def task_run_lock():
     finally:
         handle.close()
         try:
+            raw = lock_path.read_text(encoding="utf-8", errors="ignore")
+            if raw.strip() != str(os.getpid()):
+                logger.warning(
+                    "Refusing to remove task lock %s: contents belong to someone else",
+                    lock_path,
+                )
+                return
             lock_path.unlink()
         except FileNotFoundError:
             pass
+        except OSError as exc:
+            logger.warning("Failed to remove task lock %s: %s", lock_path, exc)

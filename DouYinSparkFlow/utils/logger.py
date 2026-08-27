@@ -1,5 +1,4 @@
 import logging
-import os
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -19,15 +18,25 @@ def read_text_autodetect(path):
             continue
     return data.decode("utf-8", errors="replace")
 
-# 创建 logs 文件夹（如果不存在）
-if not os.path.exists("logs"):
-    os.makedirs("logs")
-
 # 日志格式
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s"
 
-# 日志文件路径
-LOG_FILE = "logs/app.log"
+
+def _app_log_path():
+    """应用日志路径（惰性解析，避免 import 期基于 cwd 的副作用）。"""
+    try:
+        from utils.config import data_dir
+    except ImportError:
+        # utils.config 尚未完成初始化（循环导入窗口期），退回 cwd 相对路径
+        return Path("app.log")
+    root = data_dir()
+    try:
+        (root / "logs").mkdir(parents=True, exist_ok=True)
+        return root / "logs" / "app.log"
+    except OSError:
+        # 数据目录不可写时退回 cwd 相对路径，尽力保证日志可用
+        return Path("app.log")
+
 
 # 配置日志
 def setup_logger(name="app", level=logging.INFO):
@@ -47,16 +56,18 @@ def setup_logger(name="app", level=logging.INFO):
         console_handler.setLevel(level)
         console_formatter = logging.Formatter(LOG_FORMAT)
         console_handler.setFormatter(console_formatter)
-
-        # 文件日志处理器（带日志轮转）
-        file_handler = RotatingFileHandler(LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8")
-        file_handler.setLevel(level)
-        file_formatter = logging.Formatter(LOG_FORMAT)
-        file_handler.setFormatter(file_formatter)
-
-        # 添加处理器到日志记录器
         logger.addHandler(console_handler)
-        logger.addHandler(file_handler)
+
+        # 文件日志处理器（带日志轮转）；目标目录不可写时只保留控制台输出，
+        # 绝不让日志初始化失败拖垮应用启动
+        try:
+            file_handler = RotatingFileHandler(_app_log_path(), maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8")
+            file_handler.setLevel(level)
+            file_formatter = logging.Formatter(LOG_FORMAT)
+            file_handler.setFormatter(file_formatter)
+            logger.addHandler(file_handler)
+        except OSError:
+            pass
 
     return logger
 
