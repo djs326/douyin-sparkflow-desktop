@@ -1,7 +1,5 @@
 # DouYin SparkFlow — Windows 桌面版
 
-<div align="center">
-
 ---
 
 ## 功能特性
