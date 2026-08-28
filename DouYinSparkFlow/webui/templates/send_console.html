@@ -179,6 +179,23 @@
           <span>最近强确认：{{ account.last_confirmed_display or "-" }}</span>
         </div>
 
+        <div class="console-account-actions">
+          <form
+            method="post"
+            action="/ops/run-unsent"
+            data-confirm-title="补发待发送目标"
+            data-confirm="将立即补发「{{ account.username }}」尚未强确认且仍可重试的 {{ waiting_targets|length }} 个目标。确认继续吗？"
+            data-confirm-accept="开始补发"
+            data-confirm-tone="primary"
+          >
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="hidden" name="account_ref" value="{{ account.account_ref }}">
+            <button class="button button-soft" type="submit" {% if ops.task_lock.running or waiting_targets|length == 0 %}disabled{% endif %}>
+              <i data-lucide="send"></i><span>补发待发送</span>
+            </button>
+          </form>
+        </div>
+
         <div class="segmented-control" data-segment-group role="tablist" aria-label="{{ account.username }} 发送状态">
           <button class="segment-button {% if default_segment == 'exceptions' %}active{% endif %}" type="button" data-segment-target="exceptions">
             <i data-lucide="triangle-alert"></i><span>异常 {{ exception_count }}</span>

@@ -484,7 +484,22 @@
       renderWorkspace(data.workspace);
       if (workspace.state === "active" && workspace.active) {
         loadFrame();
-        if (data.logged_in) setStatus(`当前浏览器已登录：${data.username}，请保存登录态。`, "success");
+        if (data.logged_in) {
+          setStatus(`当前浏览器已登录：${data.username}，请保存登录态。`, "success");
+          // 重新登录已有账号：登录成功后自动保存登录态
+          if (pendingReloginUid) {
+            const uid = pendingReloginUid;
+            pendingReloginUid = "";
+            try {
+              await postForm("/login-desktop/save", { relogin_unique_id: uid });
+              const loginDialog = document.getElementById("login-dialog");
+              if (loginDialog && loginDialog.open) loginDialog.close();
+              window.setTimeout(() => window.location.reload(), 800);
+            } catch (error) {
+              setStatus(`保存登录态失败：${error.message}`, "danger");
+            }
+          }
+        }
       } else {
         closeFrame();
       }
@@ -511,6 +526,9 @@
     }
   };
 
+  // 当前弹窗是否处于"重新登录已有账号"模式；登录成功后自动保存，无需手动点保存
+  let pendingReloginUid = "";
+
   document.querySelectorAll(".login-desktop-open").forEach((button) => {
     button.addEventListener("click", async () => {
       // 登录流程在居中弹窗中完成
@@ -518,6 +536,7 @@
       if (loginDialog && !loginDialog.open) loginDialog.showModal();
       try {
         const reloginUniqueId = button.dataset.reloginUniqueId || "";
+        pendingReloginUid = reloginUniqueId;
         const mode = button.dataset.loginMode || (reloginUniqueId ? "relogin" : "add");
         const data = await postForm("/login-desktop/open", {
           mode,

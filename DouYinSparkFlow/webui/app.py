@@ -1124,6 +1124,18 @@ def create_app():
             return Response("Invalid CSRF token", status_code=403)
 
         refs = principal_account_refs(request)
+        # 指定单个账号补发（发送控制台账号卡片的"补发待发送"）
+        account_ref = str(form.get("account_ref", "")).strip()
+        if account_ref:
+            accounts, _ = ensure_account_refs(get_userData(force_reload=True))
+            target = account_by_ref(accounts, account_ref)
+            if not target:
+                flash(request, "账号不存在。", "error")
+                return redirect("/ops/send-console")
+            if refs is not None and account_ref not in refs:
+                flash(request, "无权操作该账号。", "error")
+                return redirect("/ops/send-console")
+            refs = [account_ref]
         pid = run_unsent_retry_now(account_refs=refs)
         if pid == TASK_ALREADY_RUNNING:
             flash(request, "发送任务正在运行，未启动待发送补发。", "warning")
