@@ -215,12 +215,12 @@ class WebUiSafetyTests(unittest.TestCase):
 
     def test_login_desktop_http_proxy_requires_auth_and_forwards_assets(self):
         client = TestClient(app_module.app)
+        # 本地单机免登录：无需登录跳转，但登录工作区未持有时返回 423
         unauthenticated = client.get(
             "/login-desktop/proxy/vnc.html",
             follow_redirects=False,
         )
-        self.assertEqual(303, unauthenticated.status_code)
-        self.assertEqual("/login", unauthenticated.headers["location"])
+        self.assertEqual(423, unauthenticated.status_code)
 
         with (
             patch.object(app_module, "current_user", return_value="admin"),
@@ -241,8 +241,9 @@ class WebUiSafetyTests(unittest.TestCase):
 
     def test_login_qr_proxy_requires_auth_and_returns_png(self):
         client = TestClient(app_module.app)
+        # 本地单机免登录：无需登录跳转，但登录工作区未持有时返回 423
         unauthenticated = client.get("/login-desktop/qr", follow_redirects=False)
-        self.assertEqual(303, unauthenticated.status_code)
+        self.assertEqual(423, unauthenticated.status_code)
 
         upstream = Mock()
         upstream.read.return_value = b"fake-png"
@@ -260,11 +261,11 @@ class WebUiSafetyTests(unittest.TestCase):
         self.assertEqual(b"fake-png", response.content)
 
     def test_dashboard_contains_mobile_qr_controls(self):
-        workspace = (Path(app_module.TEMPLATES_DIR) / "login_workspace.html").read_text(encoding="utf-8")
+        workspace = (Path(app_module.TEMPLATES_DIR) / "accounts.html").read_text(encoding="utf-8")
         self.assertIn("data-login-qr", workspace)
         self.assertIn("data-refresh-login-qr", workspace)
         self.assertIn("/login-desktop/qr", workspace)
-        # 登录工作区已独立成页，但首页保留任务状态横幅与实时轮询入口
+        # 登录工作区已并入账号管理页，首页保留任务状态横幅与实时轮询入口
         dashboard = (Path(app_module.TEMPLATES_DIR) / "dashboard.html").read_text(encoding="utf-8")
         self.assertIn("data-overview-root", dashboard)
         self.assertIn("data-task-banner", dashboard)
@@ -316,9 +317,10 @@ class WebUiSafetyTests(unittest.TestCase):
 
     def test_overview_api_requires_authentication_and_disables_cache(self):
         client = TestClient(app_module.app)
+        # 本地单机免登录：直接放行
         response = client.get("/api/ops/overview")
 
-        self.assertEqual(401, response.status_code)
+        self.assertEqual(200, response.status_code)
         self.assertEqual("no-store", response.headers["cache-control"])
 
         with (

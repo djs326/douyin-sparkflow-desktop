@@ -55,45 +55,23 @@ def clear_session(request):
 
 
 def current_user(request):
-    return request.session.get("user")
+    # 本地单机应用：免登录，始终视为本机管理员
+    return str(get_app_settings().get("admin_username", "admin")).strip() or "admin"
 
 
 def current_principal(request):
-    """Resolve the current session to live role and account assignments."""
-    username = current_user(request)
-    if not username:
-        return None
-    session_id = request.session.get("session_id", "")
-    role = request.session.get("role")
-    admin_username = str(get_app_settings().get("admin_username", "admin")).strip() or "admin"
-    if role == "admin" or (role is None and username.casefold() == admin_username.casefold()):
-        return {
-            "username": admin_username,
-            "role": "admin",
-            "account_refs": [],
-            "session_id": session_id,
-            "enabled": True,
-        }
-
-    try:
-        from webui.users import find_web_user
-        user = find_web_user(username)
-    except Exception:
-        user = None
-    if user and user.get("enabled", True):
-        return {
-            "username": user["username"],
-            "role": "user",
-            "account_refs": list(user.get("account_refs", [])),
-            "session_id": session_id,
-            "enabled": True,
-        }
-    return None
+    """本地单机应用：始终返回本机管理员身份。"""
+    return {
+        "username": str(get_app_settings().get("admin_username", "admin")).strip() or "admin",
+        "role": "admin",
+        "account_refs": [],
+        "session_id": str(request.session.get("session_id", "")),
+        "enabled": True,
+    }
 
 
 def is_admin(request):
-    principal = current_principal(request)
-    return bool(principal and principal.get("role") == "admin")
+    return True
 
 
 def csrf_token(request):

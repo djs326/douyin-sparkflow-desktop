@@ -115,9 +115,11 @@
     if (refreshBtn) refreshBtn.addEventListener("click", refresh);
     if (statusEl) statusEl.textContent = fmtTime();
 
-    // 恢复自动刷新开关状态；初始内容也滚动到底部
+    // 恢复自动刷新开关状态（默认开启，手动关闭后记忆）；初始内容也滚动到底部
     try {
-      if (localStorage.getItem(autorefreshKey) === "1" && toggle) {
+      const stored = localStorage.getItem(autorefreshKey);
+      const shouldAuto = stored === null ? true : stored === "1";
+      if (shouldAuto && toggle) {
         toggle.checked = true;
         setLive(true);
       }

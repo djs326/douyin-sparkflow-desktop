@@ -535,28 +535,14 @@ def create_app():
         return RedirectResponse(url=path, status_code=status_code)
 
     def principal(request):
-        resolved = current_principal(request)
-        if resolved:
-            return resolved
-        # Keep compatibility with older tests/signed sessions that only expose
-        # the legacy ``user`` value.
-        legacy_user = current_user(request)
-        admin_username = str(get_app_settings().get("admin_username", "admin")).strip() or "admin"
-        if legacy_user and str(legacy_user).casefold() == admin_username.casefold():
-            return {"username": admin_username, "role": "admin", "account_refs": [], "session_id": "", "enabled": True}
-        return None
+        return current_principal(request)
 
     def require_user(request):
-        if not principal(request):
-            return redirect("/login")
+        # 本地单机免登录：始终放行
         return None
 
     def require_admin(request):
-        maybe_redirect = require_user(request)
-        if maybe_redirect:
-            return maybe_redirect
-        if principal(request).get("role") != "admin":
-            return PlainTextResponse("Forbidden", status_code=403)
+        # 本地单机免登录：始终放行
         return None
 
     def account_for_request(request, unique_id):
@@ -611,75 +597,23 @@ def create_app():
 
     @app.get("/login", response_class=HTMLResponse)
     async def login_page(request: Request):
-        if current_user(request):
-            return redirect("/")
-        return render_template(
-            request,
-            "login.html",
-            {
-                "flash": pop_flash(request),
-                "bootstrapped": is_bootstrapped(),
-            },
-        )
+        # 本地单机免登录：直接进入控制台
+        return redirect("/")
 
     @app.post("/bootstrap")
     async def bootstrap(request: Request):
-        if not _same_origin_browser_request(request):
-            return PlainTextResponse(
-                "Cross-site requests are not allowed for bootstrap",
-                status_code=403,
-            )
-        if is_bootstrapped():
-            flash(request, "管理员登录已配置。", "warning")
-            return redirect("/login")
-
-        form = await request.form()
-        username = str(form.get("username", "admin")).strip() or "admin"
-        password = str(form.get("password", ""))
-        confirm = str(form.get("confirm_password", ""))
-        if not password or password != confirm:
-            flash(request, "两次输入的密码不一致，初始化失败。", "error")
-            return redirect("/login")
-
-        bootstrap_admin_password(password, username=username)
-        flash(request, "管理员账号已创建，请登录。", "success")
-        return redirect("/login")
+        # 本地单机免登录：无需初始化
+        return redirect("/")
 
     @app.post("/login")
     async def login_action(request: Request):
-        if not is_bootstrapped():
-            flash(request, "请先初始化管理员密码。", "warning")
-            return redirect("/login")
-
-        form = await request.form()
-        username = str(form.get("username", "")).strip()
-        password = str(form.get("password", ""))
-        from webui.users import authenticate
-
-        if _login_rate_limited(username):
-            logger.warning("Login rate limited for user %r", username)
-            flash(request, "尝试次数过多，请稍后再试。", "error")
-            return redirect("/login")
-
-        identity = authenticate(username, password)
-        if not identity:
-            _record_login_failure(username)
-            flash(request, "用户名或密码错误。", "error")
-            return redirect("/login")
-
-        issue_session(
-            request,
-            identity["username"],
-            role=identity["role"],
-            account_refs=identity.get("account_refs", []),
-        )
-        flash(request, "登录成功。", "success")
+        # 本地单机免登录：无需登录
         return redirect("/")
 
     @app.post("/logout")
     async def logout_action(request: Request):
-        clear_session(request)
-        return redirect("/login")
+        # 本地单机免登录：无需退出
+        return redirect("/")
 
     @app.get("/api/ops/overview")
     async def ops_overview(request: Request):
@@ -702,83 +636,21 @@ def create_app():
         form = await request.form()
         if not validate_csrf(request, str(form.get("csrf_token", ""))):
             return Response("Invalid CSRF token", status_code=403)
-        current = principal(request)
-        if current.get("role") == "admin":
-            flash(request, "请在系统设置中修改管理员密码。", "info")
-            return redirect("/")
-        password = str(form.get("new_password", ""))
-        confirm = str(form.get("confirm_password", ""))
-        if not password or password != confirm:
-            flash(request, "两次密码输入不一致。", "error")
-            return redirect("/")
-        try:
-            update_web_user(current["username"], password=password)
-            flash(request, "密码已修改，请重新登录。", "success")
-            clear_session(request)
-            return redirect("/login")
-        except UserStoreError as exc:
-            flash(request, str(exc), "error")
-            return redirect("/")
+        # 本地单机免登录：无独立账号密码体系
+        return redirect("/")
 
     @app.post("/admin/users/create")
     async def create_admin_user(request: Request):
-        maybe_redirect = require_admin(request)
-        if maybe_redirect:
-            return maybe_redirect
-        form = await request.form()
-        if not validate_csrf(request, str(form.get("csrf_token", ""))):
-            return Response("Invalid CSRF token", status_code=403)
-        refs = [value for value in form.getlist("account_refs")] if hasattr(form, "getlist") else []
-        try:
-            create_web_user(
-                str(form.get("username", "")),
-                str(form.get("password", "")),
-                enabled=str(form.get("enabled", "")) == "on",
-                account_refs=refs,
-            )
-            flash(request, "普通用户已创建。", "success")
-        except UserStoreError as exc:
-            flash(request, str(exc), "error")
-        return redirect("/settings")
+        # 桌面版为单机单用户应用，普通用户功能已移除
+        return PlainTextResponse("Multi-user accounts are not supported in the desktop build", status_code=403)
 
     @app.post("/admin/users/{username}/update")
     async def update_admin_user(request: Request, username: str):
-        maybe_redirect = require_admin(request)
-        if maybe_redirect:
-            return maybe_redirect
-        form = await request.form()
-        if not validate_csrf(request, str(form.get("csrf_token", ""))):
-            return Response("Invalid CSRF token", status_code=403)
-        refs = [value for value in form.getlist("account_refs")] if hasattr(form, "getlist") else []
-        try:
-            update_web_user(
-                username,
-                new_username=str(form.get("new_username", "")).strip() or None,
-                password=str(form.get("password", "")) or None,
-                enabled=str(form.get("enabled", "")) == "on",
-                account_refs=refs,
-            )
-            flash(request, "普通用户已更新。", "success")
-        except UserStoreError as exc:
-            flash(request, str(exc), "error")
-        return redirect("/settings")
+        return PlainTextResponse("Multi-user accounts are not supported in the desktop build", status_code=403)
 
     @app.post("/admin/users/{username}/delete")
     async def delete_admin_user(request: Request, username: str):
-        maybe_redirect = require_admin(request)
-        if maybe_redirect:
-            return maybe_redirect
-        form = await request.form()
-        if not validate_csrf(request, str(form.get("csrf_token", ""))):
-            return Response("Invalid CSRF token", status_code=403)
-        try:
-            if delete_web_user(username):
-                flash(request, "普通用户已删除，抖音账号数据未删除。", "success")
-            else:
-                flash(request, "普通用户不存在。", "error")
-        except UserStoreError as exc:
-            flash(request, str(exc), "error")
-        return redirect("/settings")
+        return PlainTextResponse("Multi-user accounts are not supported in the desktop build", status_code=403)
 
     @app.get("/", response_class=HTMLResponse)
     async def dashboard(request: Request):
@@ -823,18 +695,11 @@ def create_app():
 
     @app.get("/login-workspace", response_class=HTMLResponse)
     async def login_workspace_page(request: Request):
+        # 登录工作区已合并进账号管理页，旧链接重定向
         maybe_redirect = require_user(request)
         if maybe_redirect:
             return maybe_redirect
-
-        return render_template(
-            request,
-            "login_workspace.html",
-            {
-                "flash": pop_flash(request),
-                "is_admin": bool(principal(request) and principal(request).get("role") == "admin"),
-            },
-        )
+        return redirect("/accounts")
 
     @app.get("/config", response_class=HTMLResponse)
     async def config_page(request: Request):
@@ -848,23 +713,17 @@ def create_app():
             {
                 "flash": pop_flash(request),
                 "runtime_config": get_config(force_reload=True),
+                "ops": scoped_ops_snapshot(request),
             },
         )
 
     @app.get("/ops", response_class=HTMLResponse)
     async def ops_page(request: Request):
+        # 运维操作已合并进运行配置页，旧链接重定向
         maybe_redirect = require_admin(request)
         if maybe_redirect:
             return maybe_redirect
-
-        return render_template(
-            request,
-            "ops.html",
-            {
-                "flash": pop_flash(request),
-                "ops": scoped_ops_snapshot(request),
-            },
-        )
+        return redirect("/config")
 
     @app.get("/settings", response_class=HTMLResponse)
     async def settings_page(request: Request):
@@ -1211,14 +1070,6 @@ def create_app():
         settings["ui_port"] = int(form.get("ui_port", settings.get("ui_port", 8787)))
         save_app_settings(settings)
 
-        new_password = str(form.get("new_password", ""))
-        confirm_password = str(form.get("confirm_password", ""))
-        if new_password:
-            if new_password != confirm_password:
-                flash(request, "两次密码不一致，管理员密码未修改。", "error")
-                return redirect("/settings")
-            update_admin_password(new_password)
-
         flash(request, "系统设置已保存。", "success")
         return redirect("/settings")
 
@@ -1284,31 +1135,12 @@ def create_app():
 
     @app.post("/ops/proxy/refresh")
     async def proxy_refresh(request: Request):
-        maybe_redirect = require_admin(request)
-        if maybe_redirect:
-            return maybe_redirect
-
-        form = await request.form()
-        if not validate_csrf(request, str(form.get("csrf_token", ""))):
-            return Response("Invalid CSRF token", status_code=403)
-
-        refresh_proxy()
-        flash(request, "代理订阅已刷新。", "success")
-        return redirect("/ops")
+        # 桌面版不包含 Mihomo 代理编排
+        return PlainTextResponse("Proxy orchestration is not supported in the desktop build", status_code=403)
 
     @app.post("/ops/proxy/restart")
     async def proxy_restart(request: Request):
-        maybe_redirect = require_admin(request)
-        if maybe_redirect:
-            return maybe_redirect
-
-        form = await request.form()
-        if not validate_csrf(request, str(form.get("csrf_token", ""))):
-            return Response("Invalid CSRF token", status_code=403)
-
-        restart_proxy()
-        flash(request, "代理容器已重启。", "success")
-        return redirect("/ops")
+        return PlainTextResponse("Proxy orchestration is not supported in the desktop build", status_code=403)
 
     @app.post("/ops/schedule")
     async def save_schedule(request: Request):
@@ -1575,7 +1407,11 @@ def create_app():
             return lock_error
         url = f"{login_desktop_api_url()}/qr"
         try:
-            upstream_request = urllib.request.Request(url, method="GET")
+            upstream_request = urllib.request.Request(
+                url,
+                method="GET",
+                headers={"X-Login-Desktop-Token": login_desktop_auth_token()},
+            )
             def read_qr_response():
                 upstream = urllib.request.urlopen(upstream_request, timeout=20)
                 try:

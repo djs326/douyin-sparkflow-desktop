@@ -112,7 +112,7 @@
     </article>
   </section>
 
-  <div class="account-console-list">
+  <div class="console-grid">
     {% for account in send_console.accounts %}
     {% set exception_count = account.unconfirmed_targets|length + account.failed_targets|length + account.account_blocked_targets|length %}
     {% set success_count = account.confirmed_targets|length %}
@@ -138,10 +138,6 @@
             </small>
           </span>
         </span>
-        <span class="console-progress">
-          <span class="progress-track"><i data-account-progress style="width:{{ (success_count / account.total_targets * 100)|round(0)|int if account.total_targets else 0 }}%"></i></span>
-          <span class="progress-text" data-account-progress-text>{{ success_count }}/{{ account.total_targets }}</span>
-        </span>
         <span class="account-console-metrics">
           <span class="status-chip success">已确认 <b data-account-confirmed>{{ success_count }}</b></span>
           <span class="status-chip danger">需处理 <b data-account-attention>{{ exception_count }}</b></span>
@@ -152,6 +148,12 @@
       </summary>
 
       <div class="account-console-body">
+        <div class="console-progress-row">
+          <span class="console-progress">
+            <span class="progress-track"><i data-account-progress style="width:{{ (success_count / account.total_targets * 100)|round(0)|int if account.total_targets else 0 }}%"></i></span>
+            <span class="progress-text" data-account-progress-text>{{ success_count }}/{{ account.total_targets }}</span>
+          </span>
+        </div>
         {% if account.warnings %}
         <div class="warning-box">
           {% for warning in account.warnings %}<div>{{ warning.message }}</div>{% endfor %}

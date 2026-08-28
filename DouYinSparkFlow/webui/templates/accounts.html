@@ -7,114 +7,182 @@
 
 {% block content %}
 <div class="page-stack">
-  <section class="dashboard-section">
-    <div class="account-management-list">
-      {% for account in accounts %}
-      <details class="collapsible-section">
-        <summary>
-          <span class="summary-copy">
-            <span class="account-avatar">{{ (account.username or "A")[:1] }}</span>
-            <span>
-              <strong>{{ account.username }}</strong>
-              <small>{{ account.targets|length }} 个目标 · {{ account.friends_cache|default([], true)|length }} 个缓存好友</small>
-            </span>
-          </span>
-          <span class="status-chip {% if account.enabled|default(true) %}success{% else %}warning{% endif %}">
-            {% if account.enabled|default(true) %}已启用{% else %}已停用{% endif %}
-          </span>
-          <i class="summary-chevron" data-lucide="chevron-down"></i>
-        </summary>
-        <div class="collapsible-body">
-          <form method="post" action="/accounts/{{ account.unique_id }}/update" class="stack-form">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <div class="form-grid">
-              <label>
-                <span>显示名</span>
-                <input type="text" name="username" value="{{ account.username }}">
-              </label>
+  <div class="accounts-toolbar">
+    <div class="accounts-toolbar-left">
+      <span class="accounts-toolbar-count">{{ accounts|length }} 个账号</span>
+      <span class="pill" id="login-desktop-runtime-state">待检查</span>
+    </div>
+    <div class="accounts-toolbar-right">
+      <button class="button button-primary login-desktop-open" type="button" data-login-mode="add">
+        <i data-lucide="user-plus"></i><span>添加新账号</span>
+      </button>
+    </div>
+  </div>
+
+  <div class="account-grid">
+    {% for account in accounts %}
+    <details class="account-card">
+      <summary>
+        <span class="account-card-avatar">{{ (account.username or "A")[:1] }}</span>
+        <span class="account-card-name">
+          <strong>{{ account.username }}</strong>
+          <small>{{ account.targets|length }} 个目标 · {{ account.friends_cache|default([], true)|length }} 个好友</small>
+        </span>
+        <span class="pill {% if account.enabled|default(true) %}success{% else %}warning{% endif %}">
+          {% if account.enabled|default(true) %}已启用{% else %}已停用{% endif %}
+        </span>
+        <i class="card-chevron" data-lucide="chevron-down"></i>
+      </summary>
+      <div class="account-card-body">
+        <form method="post" action="/accounts/{{ account.unique_id }}/update" class="stack-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <label>
+            <span>显示名</span>
+            <input type="text" name="username" value="{{ account.username }}">
+          </label>
+          <label>
+            <span>目标好友，每行一个</span>
+            <textarea class="targets-textarea" name="targets" rows="5">{{ account.targets|default([], true)|join('\n') }}</textarea>
+          </label>
+          <div
+            class="friend-picker"
+            data-account-id="{{ account.unique_id }}"
+            data-refresh-url="/accounts/{{ account.unique_id }}/friends/refresh"
+            data-csrf-token="{{ csrf_token }}"
+          >
+            <div class="friend-picker-toolbar">
+              <div>
+                <strong>好友选择器</strong>
+                <p class="muted compact friend-picker-status">
+                  {% if account.friends_cache_updated_at %}上次刷新：{{ account.friends_cache_updated_at }}{% else %}尚未读取好友列表{% endif %}
+                </p>
+              </div>
+              <button class="button button-quiet friend-refresh-button" type="button">
+                <i data-lucide="refresh-cw"></i><span>刷新好友</span>
+              </button>
             </div>
             <label>
-              <span>目标好友，每行一个</span>
-              <textarea class="targets-textarea" name="targets" rows="5">{{ account.targets|default([], true)|join('\n') }}</textarea>
+              <span>搜索好友</span>
+              <input class="friend-search-input" type="search" placeholder="输入昵称筛选">
             </label>
-            <div
-              class="friend-picker"
-              data-account-id="{{ account.unique_id }}"
-              data-refresh-url="/accounts/{{ account.unique_id }}/friends/refresh"
-              data-csrf-token="{{ csrf_token }}"
+            <p class="muted compact friend-picker-summary">已选 0 人</p>
+            <div class="friend-picker-list"></div>
+            <script type="application/json" id="friends-cache-{{ account.unique_id }}">{{ account.friends_cache|default([], true)|tojson }}</script>
+            <script type="application/json" id="selected-targets-{{ account.unique_id }}">{{ account.targets|default([], true)|tojson }}</script>
+          </div>
+          <div class="account-card-actions">
+            <button class="button button-primary" type="submit">
+              <i data-lucide="save"></i><span>保存账号</span>
+            </button>
+            <button
+              class="button button-quiet login-desktop-open"
+              type="button"
+              data-relogin-unique-id="{{ account.unique_id }}"
+              data-account-name="{{ account.username }}"
             >
-              <div class="friend-picker-toolbar">
-                <div>
-                  <strong>好友选择器</strong>
-                  <p class="muted compact friend-picker-status">
-                    {% if account.friends_cache_updated_at %}上次刷新：{{ account.friends_cache_updated_at }}{% else %}尚未读取好友列表{% endif %}
-                  </p>
-                </div>
-                <button class="button button-quiet friend-refresh-button" type="button">
-                  <i data-lucide="refresh-cw"></i><span>刷新好友</span>
-                </button>
-              </div>
-              <label>
-                <span>搜索好友</span>
-                <input class="friend-search-input" type="search" placeholder="输入昵称筛选">
-              </label>
-              <p class="muted compact friend-picker-summary">已选 0 人</p>
-              <div class="friend-picker-list"></div>
-              <script type="application/json" id="friends-cache-{{ account.unique_id }}">{{ account.friends_cache|default([], true)|tojson }}</script>
-              <script type="application/json" id="selected-targets-{{ account.unique_id }}">{{ account.targets|default([], true)|tojson }}</script>
-            </div>
-            <div class="form-actions">
-              <button class="button button-primary" type="submit">
-                <i data-lucide="save"></i><span>保存账号</span>
-              </button>
-              <button
-                class="button button-quiet login-desktop-open"
-                type="button"
-                data-relogin-unique-id="{{ account.unique_id }}"
-                data-account-name="{{ account.username }}"
-              >
-                <i data-lucide="scan-line"></i><span>重新登录</span>
-              </button>
-              <button
-                class="button button-soft login-desktop-save"
-                type="button"
-                data-relogin-unique-id="{{ account.unique_id }}"
-                data-account-name="{{ account.username }}"
-              >
-                <i data-lucide="save"></i><span>保存登录态</span>
-              </button>
-              <label class="check-row inline-check">
-                <input type="checkbox" name="enabled" {% if account.enabled|default(true) %}checked{% endif %}>
-                <span>启用自动续火花</span>
-              </label>
-              {% if is_admin %}
-              <button
-                class="button button-danger"
-                type="submit"
-                formaction="/accounts/{{ account.unique_id }}/delete"
-                data-confirm-title="删除账号"
-                data-confirm="将删除账号“{{ account.username }}”及其目标、发送账本和失败记录。此操作无法撤销。"
-                data-confirm-accept="确认删除"
-              >
-                <i data-lucide="trash-2"></i><span>删除账号</span>
-              </button>
-              {% endif %}
-            </div>
-          </form>
-        </div>
-      </details>
-      {% else %}
-      <div class="empty-state">当前没有账号，请先使用交互式登录浏览器添加。</div>
-      {% endfor %}
-    </div>
-  </section>
+              <i data-lucide="scan-line"></i><span>重新登录</span>
+            </button>
+            <button
+              class="button button-soft login-desktop-save"
+              type="button"
+              data-relogin-unique-id="{{ account.unique_id }}"
+              data-account-name="{{ account.username }}"
+            >
+              <i data-lucide="save"></i><span>保存登录态</span>
+            </button>
+            <label class="check-row inline-check">
+              <input type="checkbox" name="enabled" {% if account.enabled|default(true) %}checked{% endif %}>
+              <span>启用自动续火花</span>
+            </label>
+            {% if is_admin %}
+            <button
+              class="button button-danger"
+              type="submit"
+              formaction="/accounts/{{ account.unique_id }}/delete"
+              data-confirm-title="删除账号"
+              data-confirm="将删除账号“{{ account.username }}”及其目标、发送账本和失败记录。此操作无法撤销。"
+              data-confirm-accept="确认删除"
+            >
+              <i data-lucide="trash-2"></i><span>删除账号</span>
+            </button>
+            {% endif %}
+          </div>
+        </form>
+      </div>
+    </details>
+    {% else %}
+    <div class="empty-state account-grid-empty">当前没有账号，点击右上角"添加新账号"。</div>
+    {% endfor %}
+  </div>
 </div>
 
-<div
-  id="login-desktop-controls"
-  hidden
-  data-public-url="{{ login_desktop_public_url }}"
-  data-display-mode="{{ login_desktop_display_mode }}"
-  data-csrf-token="{{ csrf_token }}"
-></div>
+<dialog class="login-dialog" id="login-dialog">
+  <div
+    id="login-desktop-controls"
+    data-public-url="{{ login_desktop_public_url }}"
+    data-display-mode="{{ login_desktop_display_mode }}"
+    data-csrf-token="{{ csrf_token }}"
+  >
+    <div class="login-dialog-head">
+      <strong>扫码登录抖音</strong>
+      <p id="login-desktop-status-text">登录浏览器已在后台运行，二维码加载后请用手机抖音扫码。</p>
+    </div>
+    <div class="login-dialog-body">
+      <img class="login-qr-image" data-login-qr alt="抖音登录二维码" hidden>
+      <p class="muted compact" data-login-qr-status>二维码加载中...</p>
+      <div class="button-row login-dialog-tools">
+        <button class="button button-soft" type="button" data-refresh-login-qr>
+          <i data-lucide="refresh-cw"></i><span>刷新二维码</span>
+        </button>
+        <a class="button button-quiet" href="/login-desktop/qr" target="_blank" rel="noopener">
+          <i data-lucide="maximize-2"></i><span>单独打开</span>
+        </a>
+        <button class="button button-quiet" type="button" data-focus-native-browser>
+          <i data-lucide="popout"></i><span>弹出独立窗口</span>
+        </button>
+      </div>
+    </div>
+    <div class="login-dialog-foot">
+      <button class="button button-primary login-desktop-save" type="button" data-relogin-unique-id="" data-login-mode="add">
+        <i data-lucide="save"></i><span>保存新账号登录</span>
+      </button>
+      <button
+        class="button button-quiet login-desktop-close"
+        type="button"
+        data-confirm-title="关闭登录界面"
+        data-confirm="当前未保存的登录过程会被关闭，登录界面会恢复初始状态。确认继续吗？"
+        data-confirm-accept="确认关闭"
+      >
+        <i data-lucide="x-circle"></i><span>关闭登录界面</span>
+      </button>
+      {% if is_admin %}
+      <button
+        class="button button-quiet login-desktop-reset"
+        type="button"
+        data-confirm-title="强制重置登录工作区"
+        data-confirm="会清理当前登录环境并切换队列中的下一位用户。确认继续吗？"
+        data-confirm-accept="确认重置"
+      >
+        <i data-lucide="rotate-ccw"></i><span>重置工作区</span>
+      </button>
+      {% endif %}
+      <button class="button button-quiet" type="button" data-copy-login-url>
+        <i data-lucide="copy"></i><span>复制地址</span>
+      </button>
+      <button class="button button-quiet" type="button" data-login-dialog-close>关闭</button>
+    </div>
+  </div>
+</dialog>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  (() => {
+    const dialog = document.getElementById("login-dialog");
+    if (!dialog) return;
+    dialog.querySelectorAll("[data-login-dialog-close]").forEach((button) => {
+      button.addEventListener("click", () => dialog.close());
+    });
+  })();
+</script>
 {% endblock %}

@@ -1752,12 +1752,24 @@ textarea {
 
 /* ---------------- 发送控制台 ---------------- */
 
+.console-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+
 .account-console {
   border-radius: var(--radius-lg);
   border: 1px solid var(--border);
   background: var(--surface);
   box-shadow: var(--shadow-sm);
   overflow: hidden;
+  transition: box-shadow 0.16s ease;
+}
+
+.account-console:hover {
+  box-shadow: var(--shadow);
 }
 
 .account-console.state-attention,
@@ -1799,8 +1811,14 @@ textarea {
   display: flex;
   align-items: center;
   gap: 10px;
-  width: 190px;
-  flex: 0 0 190px;
+  width: 100%;
+  flex: 1;
+}
+
+.console-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .console-progress .progress-track {
@@ -2239,6 +2257,361 @@ html[data-theme="dark"] .login-theme-toggle:hover {
   color: var(--text-faint);
   font-size: 12px;
   text-align: center;
+}
+
+/* ---------------- 运行配置页 ---------------- */
+
+.config-stack {
+  display: grid;
+  gap: 14px;
+}
+
+.schedule-bar {
+  padding: 14px 20px;
+}
+
+.schedule-bar-inner {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+.schedule-icon {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  border-radius: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: var(--btn-grad);
+}
+
+.schedule-field {
+  display: grid;
+  gap: 5px;
+  flex: 1;
+  min-width: 280px;
+}
+
+.field-label {
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+.schedule-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.schedule-form input {
+  flex: 1;
+}
+
+.schedule-next {
+  display: grid;
+  gap: 3px;
+  min-width: 150px;
+}
+
+.schedule-next strong {
+  font-size: 17px;
+  font-weight: 800;
+}
+
+.schedule-next small {
+  color: var(--text-faint);
+  font-size: 11.5px;
+}
+
+.config-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(300px, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.ops-actions {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+}
+
+.ops-action {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.ops-action:hover {
+  background: var(--surface-alt);
+  border-color: var(--border);
+}
+
+.ops-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.ops-action-icon {
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.ops-action-icon.danger {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.ops-action-icon.soft {
+  color: var(--warning);
+  background: var(--warning-soft);
+}
+
+.ops-action-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ops-action-copy strong {
+  font-size: 13.5px;
+}
+
+.ops-action-copy small {
+  color: var(--text-muted);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 1100px) {
+  .config-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---------------- 账号管理页 ---------------- */
+
+.accounts-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 2px 0;
+}
+
+.accounts-toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.accounts-toolbar-count {
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.account-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+
+.account-grid-empty {
+  grid-column: 1 / -1;
+}
+
+.account-card {
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+  transition: box-shadow 0.16s ease;
+}
+
+.account-card:hover {
+  box-shadow: var(--shadow);
+}
+
+.account-card > summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 16px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.account-card > summary::-webkit-details-marker {
+  display: none;
+}
+
+.account-card > summary:hover {
+  background: var(--surface-alt);
+}
+
+.account-card-avatar {
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-weight: 700;
+  font-size: 14px;
+  background: var(--btn-grad);
+}
+
+.account-card-name {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 2px;
+}
+
+.account-card-name strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13.5px;
+}
+
+.account-card-name small {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.card-chevron {
+  color: var(--text-faint);
+  transition: transform 0.18s ease;
+  flex: 0 0 auto;
+}
+
+.account-card[open] > summary .card-chevron {
+  transform: rotate(180deg);
+}
+
+.account-card-body {
+  padding: 14px 16px 18px;
+  border-top: 1px solid var(--border);
+}
+
+.account-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* ---------------- 登录弹窗 ---------------- */
+
+.login-dialog {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  padding: 0;
+  max-width: 420px;
+  width: min(90vw, 420px);
+  overflow: hidden;
+}
+
+.login-dialog::backdrop {
+  background: rgba(12, 24, 34, 0.45);
+  backdrop-filter: blur(2px);
+}
+
+.login-dialog-head {
+  padding: 18px 22px 0;
+  display: grid;
+  gap: 5px;
+}
+
+.login-dialog-head strong {
+  font-size: 16px;
+}
+
+.login-dialog-head p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.login-dialog-body {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  padding: 16px 22px 0;
+}
+
+.login-dialog-body .login-qr-image {
+  width: 240px;
+  height: 240px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: #fff;
+  object-fit: contain;
+}
+
+.login-dialog-body .muted {
+  text-align: center;
+  margin: 0;
+}
+
+.login-dialog-tools {
+  justify-content: center;
+}
+
+.login-dialog-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 14px 22px 18px;
+}
+
+/* ---------------- 系统设置页 ---------------- */
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  align-items: start;
+}
+
+@media (max-width: 1100px) {
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 /* ---------------- 确认对话框 ---------------- */

@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark light">
     <title>{% block title %}续火花{% endblock %}</title>
-    <link rel="stylesheet" href="/static/app.css?v=20260834">
+    <link rel="stylesheet" href="/static/app.css?v=20260836">
   </head>
   <body data-page="{% block page_key %}dashboard{% endblock %}">
     <div class="app-shell">
@@ -45,17 +45,9 @@
               <a class="nav-item {% if current_nav|trim == 'accounts' %}active{% endif %}" href="/accounts" data-tag-path="/accounts" data-tag-title="账号管理" title="账号管理">
                 <i data-lucide="users"></i><span>账号管理</span>
               </a>
-              <a class="nav-item {% if current_nav|trim == 'login_workspace' %}active{% endif %}" href="/login-workspace" data-tag-path="/login-workspace" data-tag-title="登录抖音账号" title="登录抖音账号">
-                <i data-lucide="scan-line"></i><span>登录抖音账号</span>
-              </a>
 {% if is_admin %}
               <a class="nav-item {% if current_nav|trim == 'config' %}active{% endif %}" href="/config" data-tag-path="/config" data-tag-title="运行配置" title="运行配置">
                 <i data-lucide="sliders-horizontal"></i><span>运行配置</span>
-              </a>
-{% endif %}
-{% if is_admin %}
-              <a class="nav-item {% if current_nav|trim == 'ops' %}active{% endif %}" href="/ops" data-tag-path="/ops" data-tag-title="运维操作" title="运维操作">
-                <i data-lucide="wrench"></i><span>运维操作</span>
               </a>
 {% endif %}
 {% if is_admin %}
@@ -88,18 +80,6 @@
               <i data-lucide="sun" class="theme-light-icon"></i>
               <i data-lucide="moon" class="theme-dark-icon"></i>
             </button>
-            <div class="user-summary">
-              <span class="user-avatar">{{ (current_user or "A")[:1] }}</span>
-              <span class="user-copy">
-                <strong>{{ current_user or "未登录" }}</strong>
-                <small>{% if is_admin %}管理员{% else %}普通用户{% endif %}</small>
-              </span>
-            </div>
-            <form method="post" action="/logout">
-              <button class="icon-button" type="submit" aria-label="退出登录" title="退出登录">
-                <i data-lucide="log-out"></i>
-              </button>
-            </form>
           </div>
         </header>
 
@@ -130,7 +110,7 @@
     </dialog>
 
     <script defer src="/static/lucide.min.js?v=20260710"></script>
-    <script defer src="/static/app.js?v=20260834"></script>
+    <script defer src="/static/app.js?v=20260836"></script>
     {% block scripts %}{% endblock %}
   </body>
 </html>

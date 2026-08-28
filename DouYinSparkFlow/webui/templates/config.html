@@ -6,27 +6,87 @@
 {% block breadcrumb_title %}运行配置{% endblock %}
 
 {% block content %}
-<div class="page-stack">
-  <section class="panel">
-    <div style="padding: 18px 20px 22px;">
-      <form method="post" action="/config" class="stack-form">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <label><span>固定消息模板</span><input type="text" name="messageTemplate" value="{{ runtime_config.messageTemplate }}"></label>
-        <label><span>消息变体，每行一个</span><textarea name="messageVariants" rows="7">{{ runtime_config.sendStrategy.messageVariants|join('\n') }}</textarea></label>
-        <div class="form-grid">
-          <label><span>消息最小间隔（秒）</span><input type="number" name="messageIntervalSecondsMin" min="0" value="{{ runtime_config.sendStrategy.messageIntervalSecondsMin }}"></label>
-          <label><span>消息最大间隔（秒）</span><input type="number" name="messageIntervalSecondsMax" min="0" value="{{ runtime_config.sendStrategy.messageIntervalSecondsMax }}"></label>
-        </div>
-        <label>
-          <span>目标顺序</span>
-          <select name="shuffleTargets">
-            <option value="on" {% if runtime_config.sendStrategy.shuffleTargets %}selected{% endif %}>随机打乱</option>
-            <option value="" {% if not runtime_config.sendStrategy.shuffleTargets %}selected{% endif %}>保持配置顺序</option>
-          </select>
-        </label>
-        <button class="button button-primary" type="submit"><i data-lucide="save"></i><span>保存运行配置</span></button>
-      </form>
+{% set summary = ops.send_console.summary %}
+{% set total = summary.total_targets or 0 %}
+
+<div class="config-stack">
+  <section class="panel schedule-bar">
+    <div class="schedule-bar-inner">
+      <span class="schedule-icon"><i data-lucide="calendar-clock"></i></span>
+      <div class="schedule-field">
+        <span class="field-label">自动发送窗口</span>
+        <form method="post" action="/ops/schedule" class="schedule-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <input type="text" name="daily_schedule" value="{{ ops.daily_schedule }}" placeholder="例如 10:00-18:00/20m">
+          <button class="button button-primary" type="submit"><i data-lucide="save"></i><span>更新</span></button>
+        </form>
+      </div>
+      <div class="schedule-next">
+        <span class="field-label">下次自动触发</span>
+        <strong>{{ ops.schedule.nextTriggerDisplay or "-" }}</strong>
+        <small>{{ ops.schedule.label or "" }}</small>
+      </div>
     </div>
   </section>
+
+  <div class="config-grid">
+    <section class="panel">
+      <div style="padding: 18px 20px 22px;">
+        <form method="post" action="/config" class="stack-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <label><span>固定消息模板</span><input type="text" name="messageTemplate" value="{{ runtime_config.messageTemplate }}"></label>
+          <label><span>消息变体，每行一个</span><textarea name="messageVariants" rows="7">{{ runtime_config.sendStrategy.messageVariants|join('\n') }}</textarea></label>
+          <div class="form-grid">
+            <label><span>消息最小间隔（秒）</span><input type="number" name="messageIntervalSecondsMin" min="0" value="{{ runtime_config.sendStrategy.messageIntervalSecondsMin }}"></label>
+            <label><span>消息最大间隔（秒）</span><input type="number" name="messageIntervalSecondsMax" min="0" value="{{ runtime_config.sendStrategy.messageIntervalSecondsMax }}"></label>
+          </div>
+          <label>
+            <span>目标顺序</span>
+            <select name="shuffleTargets">
+              <option value="on" {% if runtime_config.sendStrategy.shuffleTargets %}selected{% endif %}>随机打乱</option>
+              <option value="" {% if not runtime_config.sendStrategy.shuffleTargets %}selected{% endif %}>保持配置顺序</option>
+            </select>
+          </label>
+          <button class="button button-primary" type="submit"><i data-lucide="save"></i><span>保存运行配置</span></button>
+        </form>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="ops-actions">
+        <form
+          method="post"
+          action="/ops/run-failed"
+          data-confirm-title="补发异常目标"
+          data-confirm="将补发 {{ summary.today_attention_targets }} 个异常目标。确认继续吗？"
+          data-confirm-accept="开始补发"
+          data-confirm-tone="primary"
+        >
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="ops-action" type="submit" data-action-count-source="attention" {% if ops.task_lock.running or summary.today_attention_targets == 0 %}disabled{% endif %}>
+            <span class="ops-action-icon soft"><i data-lucide="refresh-cw"></i></span>
+            <span class="ops-action-copy"><strong>补发异常</strong><small>重发 {{ summary.today_attention_targets }} 个待核验/失败目标</small></span>
+          </button>
+        </form>
+        <form
+          method="post"
+          action="/ops/run-now"
+          data-confirm-title="补发全部对象"
+          data-confirm="将向全部 {{ total }} 个目标再次发送消息。确认继续吗？"
+          data-confirm-accept="确认全部重发"
+        >
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button class="ops-action" type="submit" data-disable-while-running {% if ops.task_lock.running or total == 0 %}disabled{% endif %}>
+            <span class="ops-action-icon danger"><i data-lucide="rotate-ccw"></i></span>
+            <span class="ops-action-copy"><strong>全部重发</strong><small>向全部 {{ total }} 个目标再次发送</small></span>
+          </button>
+        </form>
+        <a class="ops-action" href="/ops/logs">
+          <span class="ops-action-icon"><i data-lucide="scroll-text"></i></span>
+          <span class="ops-action-copy"><strong>查看详细日志</strong><small>发送过程与任务输出</small></span>
+        </a>
+      </div>
+    </section>
+  </div>
 </div>
 {% endblock %}

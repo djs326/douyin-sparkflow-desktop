@@ -195,6 +195,8 @@ def start_login_desktop_server():
     # 登录页走容器 noVNC 路径而白屏，这里必须覆盖而非 setdefault。
     os.environ["LOGIN_DESKTOP_MODE"] = "native"
     os.environ.setdefault("LOGIN_DESKTOP_API_PORT", str(LOGIN_DESKTOP_PORT))
+    # 内嵌二维码模式：登录 Chromium 后台隐藏运行，应用窗口内展示二维码扫码
+    os.environ.setdefault("LOGIN_DESKTOP_HIDDEN_WINDOW", "1")
     # 确保认证 token 已生成（webui 与登录服务共享同一数据目录自动互通）
     from utils.config import login_desktop_auth_token
 

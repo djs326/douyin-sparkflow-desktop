@@ -498,7 +498,9 @@
 
   document.querySelectorAll(".login-desktop-open").forEach((button) => {
     button.addEventListener("click", async () => {
-      if (section) section.open = true;
+      // 登录流程在居中弹窗中完成
+      const loginDialog = document.getElementById("login-dialog");
+      if (loginDialog && !loginDialog.open) loginDialog.showModal();
       try {
         const reloginUniqueId = button.dataset.reloginUniqueId || "";
         const mode = button.dataset.loginMode || (reloginUniqueId ? "relogin" : "add");
@@ -510,7 +512,6 @@
         if (data.state === "queued") return;
         loadFrame(true);
         refreshLoginQr(500);
-        if (frame) frame.scrollIntoView({ behavior: "smooth", block: "start" });
       } catch (error) {
         setStatus(`申请登录工作区失败：${error.message}`, "danger");
       }

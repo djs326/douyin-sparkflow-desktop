@@ -43,6 +43,15 @@ LOGIN_DESKTOP_MODE = str(
 ).strip().lower()
 if LOGIN_DESKTOP_MODE not in {"native", "novnc"}:
     LOGIN_DESKTOP_MODE = "native" if os.name == "nt" else "novnc"
+# 内嵌二维码模式：Chromium 窗口启动在屏幕外（不打扰用户），
+# 应用窗口内展示二维码完成扫码；需要处理验证码时可 focus 把窗口移回屏幕。
+LOGIN_DESKTOP_HIDDEN_WINDOW = str(os.getenv("LOGIN_DESKTOP_HIDDEN_WINDOW", "")).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+LOGIN_HIDDEN_POSITION = "-32000,-32000"
 IDLE_TIMEOUT_SECONDS = max(300, int(os.getenv("LOGIN_DESKTOP_IDLE_TIMEOUT_SECONDS", "1800")))
 STOP_AFTER_EXPORT_SECONDS = max(0, int(os.getenv("LOGIN_DESKTOP_STOP_AFTER_EXPORT_SECONDS", "60")))
 STATUS_CACHE_SECONDS = max(1, int(os.getenv("LOGIN_DESKTOP_STATUS_CACHE_SECONDS", "15")))
@@ -88,6 +97,36 @@ GENERIC_WWW_NAMES = {
     "海量优质视频内容",
     "抖音精选电脑版",
 }
+
+
+def _move_hidden_login_window_back():
+    """把屏幕外的 Chromium 登录窗口移回屏幕中央（内嵌二维码模式的兜底）。"""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        SWP_NOSIZE = 0x0001
+        SWP_NOZORDER = 0x0004
+
+        def _enum_callback(hwnd, _):
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            rect = ctypes.wintypes.RECT()
+            user32.GetWindowRect(hwnd, ctypes.byref(rect))
+            if rect.left > -30000 or rect.top > -30000:
+                return True
+            class_name = ctypes.create_unicode_buffer(256)
+            user32.GetClassNameW(hwnd, class_name, 256)
+            if "Chrome_WidgetWin_1" not in class_name.value:
+                return True
+            user32.SetWindowPos(hwnd, None, 100, 60, 0, 0, SWP_NOSIZE | SWP_NOZORDER)
+            return False
+
+        user32.EnumWindows(ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)(_enum_callback), 0)
+    except Exception:
+        pass
 
 
 class LoginNetworkError(RuntimeError):
@@ -312,14 +351,23 @@ class LoginDesktopManager:
                 self.playwright = None
             route = await self._select_network_route()
             self.playwright = await async_playwright().start()
-            launch_args = [
-                "--start-maximized",
-                "--window-position=0,0",
-                "--window-size=1600,1000",
-                "--disable-background-networking",
-                "--disable-sync",
-                "--disable-features=Translate,MediaRouter,OptimizationHints,AutofillServerCommunication",
-            ]
+            if LOGIN_DESKTOP_HIDDEN_WINDOW and os.name == "nt":
+                launch_args = [
+                    f"--window-position={LOGIN_HIDDEN_POSITION}",
+                    "--window-size=1280,900",
+                    "--disable-background-networking",
+                    "--disable-sync",
+                    "--disable-features=Translate,MediaRouter,OptimizationHints,AutofillServerCommunication",
+                ]
+            else:
+                launch_args = [
+                    "--start-maximized",
+                    "--window-position=0,0",
+                    "--window-size=1600,1000",
+                    "--disable-background-networking",
+                    "--disable-sync",
+                    "--disable-features=Translate,MediaRouter,OptimizationHints,AutofillServerCommunication",
+                ]
             if os.name != "nt":
                 launch_args.extend(
                     [
@@ -405,6 +453,9 @@ class LoginDesktopManager:
     async def focus_browser(self):
         self.mark_activity()
         page = await self._get_active_page()
+        if LOGIN_DESKTOP_HIDDEN_WINDOW and os.name == "nt":
+            # 内嵌模式：把屏幕外的登录窗口移回屏幕中央，便于处理验证码等场景
+            _move_hidden_login_window_back()
         try:
             await page.bring_to_front()
         except Exception:
