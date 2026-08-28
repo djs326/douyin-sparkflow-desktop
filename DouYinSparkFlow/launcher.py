@@ -315,6 +315,105 @@ class Api:
         return {"ok": True, "path": path}
 
 
+def _tray_icon_path():
+    """托盘图标：打包版取 _internal/app.ico，开发版取 packaging/windows/app.ico。"""
+    if get_environment() == Environment.PACKED:
+        bundled = Path(getattr(sys, "_MEIPASS", "")) / "app.ico"
+        if bundled.exists():
+            return bundled
+    local = Path(__file__).resolve().parent.parent / "packaging" / "windows" / "app.ico"
+    return local if local.exists() else None
+
+
+class TrayController:
+    """系统托盘（pystray）：关窗口后常驻后台，托盘菜单可显示窗口/退出。"""
+
+    def __init__(self, icon_path, on_show, on_quit):
+        self._icon_path = icon_path
+        self._on_show = on_show
+        self._on_quit = on_quit
+        self._icon = None
+        self._thread = None
+
+    def start(self):
+        def _run():
+            try:
+                import pystray
+                from PIL import Image
+            except Exception:
+                logger.exception("Tray dependencies unavailable, skipping tray")
+                return
+            try:
+                if self._icon_path:
+                    image = Image.open(self._icon_path)
+                else:
+                    image = Image.new("RGBA", (64, 64), (94, 155, 196, 255))
+                menu = pystray.Menu(
+                    pystray.MenuItem("显示窗口", lambda: self._on_show(), default=True),
+                    pystray.MenuItem("退出", lambda: self._on_quit()),
+                )
+                self._icon = pystray.Icon("DouYinSparkFlow", image, APP_TITLE, menu)
+                self._icon.run()
+            except Exception:
+                logger.exception("Tray icon failed to start")
+
+        self._thread = threading.Thread(target=_run, name="tray", daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        if self._icon:
+            try:
+                self._icon.stop()
+            except Exception:
+                pass
+
+
+def set_autostart(enabled: bool) -> bool:
+    """开机自启：写/删 HKCU Run 注册表项（仅 Windows）。"""
+    if os.name != "nt":
+        return False
+    import winreg
+
+    key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+    name = "DouYinSparkFlow"
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
+            if enabled:
+                if get_environment() == Environment.PACKED:
+                    command = f'"{Path(sys.executable).resolve()}"'
+                else:
+                    launcher = Path(__file__).resolve()
+                    command = f'"{Path(sys.executable).resolve()}" "{launcher}"'
+                winreg.SetValueEx(key, name, 0, winreg.REG_SZ, command)
+            else:
+                try:
+                    winreg.DeleteValue(key, name)
+                except FileNotFoundError:
+                    pass
+        return True
+    except Exception:
+        logger.exception("Failed to update autostart registry")
+        return False
+
+
+def autostart_enabled() -> bool:
+    """读取开机自启注册表项当前状态。"""
+    if os.name != "nt":
+        return False
+    import winreg
+
+    key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_READ) as key:
+            winreg.QueryValueEx(key, "DouYinSparkFlow")
+            return True
+    except FileNotFoundError:
+        return False
+    except Exception:
+        logger.exception("Failed to read autostart registry")
+        return False
+
+
 def _run_cli_mode(argv):
     """打包版子进程调用形式（``exe main.py --doTask``）：复用 main.py 的 CLI 分支，
     避免再拉起一个完整桌面实例。"""
@@ -393,8 +492,11 @@ def _main():
         _fallback_browser_mode(lock)
         return
 
+    window = None
+    quit_requested = threading.Event()
+    tray = None
     try:
-        webview.create_window(
+        window = webview.create_window(
             APP_TITLE,
             f"http://{WEB_HOST}:{WEB_PORT}",
             width=1280,
@@ -402,13 +504,45 @@ def _main():
             min_size=(960, 620),
             js_api=Api(),
         )
+
+        def on_closing():
+            # 常驻：点 ✕ 只隐藏窗口，服务继续运行；托盘"退出"才真正关闭
+            if quit_requested.is_set():
+                return True
+            try:
+                window.hide()
+            except Exception:
+                pass
+            logger.info("Window hidden to tray; services keep running")
+            return False
+
+        def show_window():
+            try:
+                window.show()
+                window.restore()
+            except Exception:
+                pass
+
+        def quit_app():
+            quit_requested.set()
+            try:
+                window.destroy()
+            except Exception:
+                pass
+
+        window.events.closing += on_closing
+        tray = TrayController(_tray_icon_path(), show_window, quit_app)
+        tray.start()
         webview.start()
     except Exception:
         logger.exception("pywebview window failed, falling back to browser mode")
+        tray = None
         _fallback_browser_mode(lock)
         return
 
-    logger.info("Window closed, shutting down services…")
+    logger.info("Quit requested, shutting down services…")
+    if tray:
+        tray.stop()
     stop_all_servers()
     _join_server_threads(web_thread, login_thread)
     release_single_instance(lock)

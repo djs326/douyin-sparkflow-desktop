@@ -99,6 +99,7 @@ datas = [
     (r'$($SourceDir -replace '\\','/')/core/protocol_sender.mjs', 'core'),
     (r'$($SourceDir -replace '\\','/')/webui/templates', 'webui/templates'),
     (r'$($SourceDir -replace '\\','/')/webui/static', 'webui/static'),
+    (r'$($PSScriptRoot -replace '\\','/')/app.ico', '.'),
 ]
 binaries = []
 hiddenimports = ['websockets', 'httpx']

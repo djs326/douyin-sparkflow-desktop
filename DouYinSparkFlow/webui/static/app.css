@@ -1687,7 +1687,7 @@ textarea {
 }
 
 .desktop-frame-wrap {
-  min-height: 380px;
+  min-height: 240px;
   border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: var(--surface-alt);
@@ -1702,18 +1702,33 @@ textarea {
   background: #fff;
 }
 
+/* native 登录模式（弹本机浏览器）时不显示空 iframe */
+.desktop-frame-wrap.native-login-mode .desktop-frame {
+  display: none;
+}
+
 .native-login-panel {
   display: grid;
-  gap: 8px;
+  gap: 7px;
   justify-items: center;
-  padding: 40px 20px;
+  padding: 24px 20px 26px;
   text-align: center;
 }
 
 .native-login-panel > svg {
-  width: 36px;
-  height: 36px;
+  width: 28px;
+  height: 28px;
   color: var(--primary);
+}
+
+.native-login-panel strong {
+  font-size: 13.5px;
+}
+
+.native-login-panel .muted {
+  max-width: 340px;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .workspace-hint {

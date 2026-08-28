@@ -757,6 +757,18 @@ async def run_send_window_scheduler():
             logger.exception("Send window scheduler tick failed")
 
 
+def autostart_enabled() -> bool:
+    from launcher import autostart_enabled as _impl
+
+    return _impl()
+
+
+def set_autostart(enabled: bool) -> bool:
+    from launcher import set_autostart as _impl
+
+    return _impl(enabled)
+
+
 def _parse_sent_at(raw_value, local_tz):
     return parse_sent_at(raw_value, local_tz)
 

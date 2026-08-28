@@ -79,6 +79,7 @@ from webui.login_lock import (
 )
 from webui.ops import (
     TASK_ALREADY_RUNNING,
+    autostart_enabled,
     get_overview_snapshot,
     get_ops_snapshot,
     read_log_tail,
@@ -88,6 +89,7 @@ from webui.ops import (
     run_task_now,
     run_send_window_scheduler,
     run_unsent_retry_now,
+    set_autostart,
     task_run_lock_status,
     sync_daily_schedule_from_config,
     update_daily_schedule,
@@ -877,8 +879,26 @@ def create_app():
                 "flash": pop_flash(request),
                 "web_users": get_web_users(),
                 "all_accounts": get_userData(force_reload=True),
+                "autostart_enabled": autostart_enabled(),
             },
         )
+
+    @app.post("/settings/autostart")
+    async def settings_autostart(request: Request):
+        maybe_redirect = require_admin(request)
+        if maybe_redirect:
+            return maybe_redirect
+
+        form = await request.form()
+        if not validate_csrf(request, str(form.get("csrf_token", ""))):
+            return Response("Invalid CSRF token", status_code=403)
+
+        enabled = str(form.get("enabled", "")) == "on"
+        if set_autostart(enabled):
+            flash(request, "开机自启已开启。" if enabled else "开机自启已关闭。", "success")
+        else:
+            flash(request, "开机自启设置失败。", "error")
+        return redirect("/settings")
 
     @app.get("/ops/send-console", response_class=HTMLResponse)
     async def send_console_page(request: Request):

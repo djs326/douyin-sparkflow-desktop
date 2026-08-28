@@ -85,6 +85,19 @@
     </div>
   </section>
 
+  <section class="panel">
+    <div style="padding: 18px 20px 22px;">
+      <form method="post" action="/settings/autostart" class="stack-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <label class="check-row">
+          <input type="checkbox" name="enabled" {% if autostart_enabled %}checked{% endif %}>
+          <span>开机自动启动（登录 Windows 后自动运行，常驻系统托盘）</span>
+        </label>
+        <button class="button button-primary" type="submit"><i data-lucide="power"></i><span>保存自启设置</span></button>
+      </form>
+    </div>
+  </section>
+
   {% if not is_admin %}
   <section class="panel">
     <div style="padding: 18px 20px 22px;">
