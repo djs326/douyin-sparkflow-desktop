@@ -69,7 +69,15 @@
         {% endif %}
       </span>
     </strong>
-    <span class="pill info" data-overview-live-state>实时</span>
+    <div class="status-banner-actions">
+      <form method="post" action="/ops/task-stop">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="button button-quiet" type="submit" data-confirm-title="停止发送任务" data-confirm="将终止当前正在运行的发送任务。确认继续吗？" data-confirm-accept="确认停止">
+          <i data-lucide="square"></i><span>停止任务</span>
+        </button>
+      </form>
+      <span class="pill info" data-overview-live-state>实时</span>
+    </div>
   </div>
 
   <div class="status-banner info refresh-notice" data-refresh-notice>

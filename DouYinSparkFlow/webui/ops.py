@@ -109,9 +109,42 @@ def _parse_lock_pid(raw):
         return None
 
 
+def stop_running_task():
+    """手动停止正在运行的发送任务：终止任务子进程树并清理任务锁。"""
+    lock_path = data_dir() / "logs" / "task.run.lock"
+    status = task_run_lock_status()
+    if not status.get("running"):
+        return False, "当前没有正在运行的任务"
+    pid = status.get("pid")
+    if pid and pid > 0:
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                capture_output=True,
+                timeout=30,
+                check=False,
+            )
+        except Exception as exc:
+            logger.error("Failed to kill task pid=%s: %s", pid, exc)
+    try:
+        lock_path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    return True, f"已停止任务（pid {pid}）"
+
+
 def task_run_lock_status():
     lock_path = data_dir() / "logs" / "task.run.lock"
     if not lock_path.exists():
+        return {
+            "running": False,
+            "path": str(lock_path),
+            "pid": None,
+            "ageSeconds": 0,
+            "stale": False,
+            "staleReason": "",
+            "staleRemoved": False,
+        }
         return {
             "running": False,
             "path": str(lock_path),

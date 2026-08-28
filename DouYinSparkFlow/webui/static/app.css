@@ -712,6 +712,13 @@ html[data-theme="dark"] .theme-light-icon {
   font-size: 13px;
 }
 
+.status-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
 .status-banner.success {
   border-color: var(--success);
   background: var(--success-soft);

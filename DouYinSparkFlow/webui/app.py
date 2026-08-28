@@ -90,6 +90,7 @@ from webui.ops import (
     run_send_window_scheduler,
     run_unsent_retry_now,
     set_autostart,
+    stop_running_task,
     task_run_lock_status,
     sync_daily_schedule_from_config,
     update_daily_schedule,
@@ -1144,6 +1145,23 @@ def create_app():
         else:
             flash(request, f"待发送补发已在后台启动（pid {pid}）。刷新发送控制台查看结果。", "info")
         return redirect("/ops/send-console")
+
+    @app.post("/ops/task-stop")
+    async def ops_task_stop(request: Request):
+        maybe_redirect = require_user(request)
+        if maybe_redirect:
+            return maybe_redirect
+
+        form = await request.form()
+        if not validate_csrf(request, str(form.get("csrf_token", ""))):
+            return Response("Invalid CSRF token", status_code=403)
+
+        ok, message = stop_running_task()
+        if ok:
+            flash(request, message, "success")
+        else:
+            flash(request, message, "warning")
+        return redirect("/")
 
     @app.post("/ops/proxy/refresh")
     async def proxy_refresh(request: Request):
