@@ -411,17 +411,16 @@
       return;
     }
     if (workspace.state === "active" && workspace.active) {
-      const remaining = Math.max(0, Number(workspace.remaining_seconds || 0));
-      const tone = remaining > 0 && remaining <= 60 ? "warning" : "success";
       if (displayMode === "native") {
         if (nativePanel) nativePanel.hidden = false;
         if (frameWrap) {
           frameWrap.hidden = false;
           frameWrap.classList.add("native-login-mode");
         }
-        setStatus(`Windows 本地登录浏览器已打开，剩余 ${remaining} 秒。完成扫码后请保存登录态。`, tone);
+        // 工作区由心跳自动续期，不显示倒计时（避免续期导致的数字跳动）
+        setStatus("登录浏览器已在后台运行，扫码完成后请保存登录态。", "success");
       } else {
-        setStatus(`登录工作区已分配给当前会话，剩余 ${remaining} 秒。完成扫码后请保存登录态。`, tone);
+        setStatus("登录工作区已分配，扫码完成后请保存登录态。", "success");
       }
       return;
     }
@@ -433,8 +432,16 @@
     window.clearTimeout(qrRefreshTimer);
     qrRefreshTimer = window.setTimeout(async () => {
       if (qrStatus) qrStatus.textContent = "正在读取登录二维码...";
+      // 10 秒超时：Edge 冷启动/二维码生成期间 fetch 可能长时间挂起，
+      // 超时按 202 处理继续重试，避免卡在"正在读取"
+      const controller = new AbortController();
+      const abortTimer = window.setTimeout(() => controller.abort(), 10000);
       try {
-        const response = await fetch(`/login-desktop/qr?t=${Date.now()}`, { credentials: "same-origin", cache: "no-store" });
+        const response = await fetch(`/login-desktop/qr?t=${Date.now()}`, {
+          credentials: "same-origin",
+          cache: "no-store",
+          signal: controller.signal,
+        });
         if (response.status === 202) {
           if (retries > 1 && workspace.state === "active") {
             if (qrStatus) qrStatus.textContent = "浏览器正在生成二维码，继续等待...";
@@ -458,6 +465,8 @@
         } else if (qrStatus) {
           qrStatus.textContent = "二维码还未准备好，请确认自己已经获得登录工作区。";
         }
+      } finally {
+        window.clearTimeout(abortTimer);
       }
     }, delay);
   };
@@ -488,7 +497,13 @@
     if (workspace.state !== "active" || !workspace.active || !workspace.ticket) return;
     try {
       const data = await postForm("/login-desktop/heartbeat", { ticket: workspace.ticket });
-      renderWorkspace(data.workspace);
+      if (data.ok === false) {
+        workspace = { state: "closed", active: false, position: 0, ticket: "" };
+        closeFrame();
+        setStatus(`登录工作区已释放：${data.error || "未知错误"}`, "danger");
+      }
+      // 心跳成功只续期，不覆盖 UI 状态（pollStatus 负责状态展示，
+      // 否则会冲掉"当前浏览器已登录"提示）
     } catch (error) {
       workspace = { state: "closed", active: false, position: 0, ticket: "" };
       closeFrame();
@@ -536,6 +551,16 @@
     button.addEventListener("click", async () => {
       button.disabled = true;
       try {
+        // 先清掉旧二维码，避免误扫旧码；新码就绪后再显示
+        if (qrImage) {
+          const previous = qrImage.dataset.objectUrl || "";
+          qrImage.hidden = true;
+          qrImage.removeAttribute("src");
+          if (previous) URL.revokeObjectURL(previous);
+          delete qrImage.dataset.objectUrl;
+        }
+        if (qrStatus) qrStatus.textContent = "正在刷新二维码...";
+        // 刷新请求返回时新二维码已就绪（后端等待渲染完成），再拉取图片
         await postForm("/login-desktop/qr/refresh", { ticket: workspace.ticket });
         refreshLoginQr(500);
       } catch (error) {
@@ -567,6 +592,7 @@
         renderWorkspace(data.workspace);
         closeFrame();
         if (qrImage) qrImage.hidden = true;
+        // 弹窗保留，状态显示"已关闭"，可点"重新打开登录"再次发起
       } catch (error) {
         setStatus(`关闭登录界面失败：${error.message}`, "danger");
       }
@@ -578,10 +604,14 @@
       try {
         const data = await postForm("/login-desktop/reset");
         renderWorkspace(data.workspace);
+        if (data.state === "queued") return;
         closeFrame();
         if (qrImage) qrImage.hidden = true;
+        // 重新加载二维码
+        loadFrame(true);
+        refreshLoginQr(500);
       } catch (error) {
-        setStatus(`结束登录流程失败：${error.message}`, "danger");
+        setStatus(`重置工作区失败：${error.message}`, "danger");
       }
     });
   });
@@ -601,16 +631,11 @@
   pollStatus();
   timer = window.setInterval(pollStatus, 5000);
   heartbeatTimer = window.setInterval(heartbeat, 5000);
-  countdownTimer = window.setInterval(() => {
-    if (workspace.state !== "active" || !workspace.active) return;
-    workspace.remaining_seconds = Math.max(0, Number(workspace.remaining_seconds || 0) - 1);
-    const remaining = workspace.remaining_seconds;
-    setStatus(`登录工作区已分配给当前会话，剩余 ${remaining} 秒。完成扫码后请保存登录态。`, remaining <= 60 ? "warning" : "success");
-  }, 1000);
+  // 工作区由心跳自动续期，无需本地倒计时
+  countdownTimer = null;
   window.addEventListener("pagehide", () => {
     window.clearInterval(timer);
     window.clearInterval(heartbeatTimer);
-    window.clearInterval(countdownTimer);
   });
 })();
 

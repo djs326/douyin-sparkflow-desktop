@@ -494,10 +494,22 @@ def _main():
         _fallback_browser_mode(lock)
         return
 
-    window = None
     quit_requested = threading.Event()
+    show_request = threading.Event()
     tray = None
-    try:
+    _active_window = []
+
+    def quit_app():
+        # 托盘"退出"：请求退出并销毁当前窗口（若有），让主循环退出
+        quit_requested.set()
+        try:
+            if _active_window:
+                _active_window[0].destroy()
+        except Exception:
+            pass
+
+    def create_window():
+        """创建主窗口；closing 时放行销毁（WebView2 全部退出，后台零 UI 内存）。"""
         window = webview.create_window(
             APP_TITLE,
             f"http://{WEB_HOST}:{WEB_PORT}",
@@ -506,39 +518,39 @@ def _main():
             min_size=(960, 620),
             js_api=Api(),
         )
+        _active_window.clear()
+        _active_window.append(window)
 
         def on_closing():
-            # 常驻：点 ✕ 只隐藏窗口，服务继续运行；托盘"退出"才真正关闭
-            if quit_requested.is_set():
-                return True
-            try:
-                window.hide()
-            except Exception:
-                pass
-            logger.info("Window hidden to tray; services keep running")
-            return False
-
-        def show_window():
-            try:
-                window.show()
-                window.restore()
-            except Exception:
-                pass
-
-        def quit_app():
-            quit_requested.set()
-            try:
-                window.destroy()
-            except Exception:
-                pass
+            # 总是放行窗口关闭（销毁 WebView2，后台零 UI 内存）；
+            # 主循环根据 quit_requested 决定"真正退出"还是"等待托盘重新显示窗口"
+            return True
 
         window.events.closing += on_closing
-        tray = TrayController(_tray_icon_path(), show_window, quit_app)
+        return window
+
+    try:
+        tray = TrayController(
+            _tray_icon_path(),
+            lambda: show_request.set(),
+            quit_app,
+        )
         tray.start()
-        webview.start()
+
+        while True:
+            if quit_requested.is_set():
+                break
+            create_window()
+            webview.start()
+            if quit_requested.is_set():
+                break
+            # 窗口已关闭（隐藏到托盘），等待托盘"显示窗口"再重建
+            show_request.wait()
+            show_request.clear()
     except Exception:
         logger.exception("pywebview window failed, falling back to browser mode")
-        tray = None
+        if tray:
+            tray.stop()
         _fallback_browser_mode(lock)
         return
 

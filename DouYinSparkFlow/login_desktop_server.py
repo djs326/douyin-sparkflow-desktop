@@ -54,7 +54,7 @@ LOGIN_DESKTOP_HIDDEN_WINDOW = str(os.getenv("LOGIN_DESKTOP_HIDDEN_WINDOW", "")).
 LOGIN_HIDDEN_POSITION = "-32000,-32000"
 IDLE_TIMEOUT_SECONDS = max(300, int(os.getenv("LOGIN_DESKTOP_IDLE_TIMEOUT_SECONDS", "1800")))
 STOP_AFTER_EXPORT_SECONDS = max(0, int(os.getenv("LOGIN_DESKTOP_STOP_AFTER_EXPORT_SECONDS", "60")))
-STATUS_CACHE_SECONDS = max(1, int(os.getenv("LOGIN_DESKTOP_STATUS_CACHE_SECONDS", "15")))
+STATUS_CACHE_SECONDS = max(1, int(os.getenv("LOGIN_DESKTOP_STATUS_CACHE_SECONDS", "3")))
 LOGIN_NETWORK_MODE = str(os.getenv("LOGIN_DESKTOP_PROXY_MODE", "auto")).strip().lower()
 if LOGIN_NETWORK_MODE not in {"auto", "direct", "proxy"}:
     LOGIN_NETWORK_MODE = "auto"
@@ -386,6 +386,12 @@ class LoginDesktopManager:
                 "viewport": {"width": 1600, "height": 1000},
                 "args": launch_args,
             }
+            # 使用用户本机浏览器（Edge/Chrome），不再内置 Chromium
+            from core.browser import system_browser_executable
+
+            system_browser = system_browser_executable()
+            if system_browser:
+                launch_options["executable_path"] = system_browser
             if route["mode"] == "proxy":
                 launch_options["proxy"] = {"server": LOGIN_PROXY_SERVER}
             else:
@@ -527,6 +533,26 @@ class LoginDesktopManager:
                     unique_id = result["unique_id"]
                 except Exception:
                     pass
+                if not logged_in:
+                    # 页面可能已跳转到 www 域（扫码确认后常见），用会话 cookie 判定登录态
+                    try:
+                        cookies = await self.context.cookies()
+                        if any(
+                            cookie.get("name") in {"sid_tt", "sessionid"} and cookie.get("value")
+                            for cookie in cookies
+                        ):
+                            logged_in = True
+                            try:
+                                identity = await collect_www_identity_from_page(page)
+                                for item in identity.get("candidates") or []:
+                                    name = _clean_www_display_name(item.get("text"))
+                                    if name:
+                                        username = name
+                                        break
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
 
         payload = {
             "running": True,
@@ -559,6 +585,15 @@ class LoginDesktopManager:
                 await self.start()
                 page = await self._get_active_page()
                 await page.goto(refresh_url, wait_until="commit", timeout=30000)
+            # 打开登录页后立即检测一次安全验证（扫码确认后触发风控时自动弹窗）
+            try:
+                body_text = await page.evaluate("() => document.body?.innerText || ''")
+                if any(token in body_text for token in ("安全验证", "滑块", "请完成下方安全验证")):
+                    if LOGIN_DESKTOP_HIDDEN_WINDOW and os.name == "nt":
+                        _move_hidden_login_window_back()
+                    logger.info("Login page requires security verification; moved window back to screen")
+            except Exception:
+                pass
             return {"ok": True, "url": page.url, "network": self._network_payload()}
         finally:
             self._page_operation_lock.release()
@@ -575,40 +610,49 @@ class LoginDesktopManager:
             self._page_operation_lock.release()
 
     async def _refresh_login_qr_locked(self):
+        page = await self._get_active_page()
+        # 已登录时无需刷新二维码：保留当前已登录页面，避免导航回登录页
+        try:
+            cookies = await self.context.cookies()
+            if any(
+                cookie.get("name") in {"sid_tt", "sessionid"} and cookie.get("value")
+                for cookie in cookies
+            ):
+                return {"ok": True, "url": page.url, "logged_in": True, "qr_ready": False}
+        except Exception:
+            pass
         refresh_url = f"{REMOTE_LOGIN_URL}?qr_refresh={int(time.time() * 1000)}"
         try:
-            page = await self._get_active_page()
+            # commit 立即返回（不等 DOM/load，SPA 这两个事件都慢）；新码由下方循环检测
             await page.goto(refresh_url, wait_until="commit", timeout=30000)
         except Exception:
             await self.reset()
             page = await self._get_active_page()
             await page.goto(refresh_url, wait_until="commit", timeout=30000)
 
-        deadline = asyncio.get_running_loop().time() + 45
+        deadline = asyncio.get_running_loop().time() + 15
         logged_in = False
         qr_ready = False
+        qr_check_script = (
+            "() => {"
+            "  const imgs = [...document.querySelectorAll('img[src^=\"data:image/png;base64\"], img[class*=\"qrcode\"]')];"
+            "  for (const img of imgs) {"
+            "    const r = img.getBoundingClientRect();"
+            "    if (r.width >= 120 && r.height >= 120) {"
+            "      const ratio = r.width / Math.max(1, r.height);"
+            "      if (ratio >= 0.8 && ratio <= 1.25) return true;"
+            "    }"
+            "  }"
+            "  return false;"
+            "}"
+        )
         while asyncio.get_running_loop().time() < deadline:
-            for selector in (
-                'img[class*="qrcode"]',
-                'img[src^="data:image/png;base64"]',
-            ):
-                candidates = page.locator(selector)
-                for index in range(await candidates.count()):
-                    qr = candidates.nth(index)
-                    try:
-                        if not await qr.is_visible():
-                            continue
-                        box = await qr.bounding_box()
-                        if not box or box["width"] < 120 or box["height"] < 120:
-                            continue
-                        ratio = box["width"] / max(1, box["height"])
-                        if 0.8 <= ratio <= 1.25:
-                            qr_ready = True
-                            break
-                    except Exception:
-                        pass
-                if qr_ready:
+            try:
+                if await page.evaluate(qr_check_script):
+                    qr_ready = True
                     break
+            except Exception:
+                pass
 
             if "/creator-micro/" in page.url:
                 logged_in = True
@@ -619,7 +663,17 @@ class LoginDesktopManager:
                 break
             except Exception:
                 pass
-            await asyncio.sleep(0.75)
+            # 检测到安全验证（滑块等风控）时，把隐藏的窗口移回屏幕让用户操作
+            try:
+                body_text = await page.evaluate("() => document.body?.innerText || ''")
+                if any(token in body_text for token in ("安全验证", "滑块", "请完成下方安全验证")):
+                    if LOGIN_DESKTOP_HIDDEN_WINDOW and os.name == "nt":
+                        _move_hidden_login_window_back()
+                    logger.info("Login page requires security verification; moved window back to screen")
+                    break
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
 
         if not qr_ready and not logged_in:
             raise RuntimeError("Douyin login page did not expose a QR code or a logged-in session")
@@ -836,6 +890,8 @@ async def export():
             result = await collect_www_login_result(page, manager.context)
         except Exception as www_exc:
             raise HTTPException(status_code=400, detail=f"创作者导出失败：{creator_exc}；www 导出失败：{www_exc}")
+    # 无论走哪条提取路径，保存成功后都调度自动停止登录浏览器（释放内存）
+    manager.schedule_stop_after_export()
     return {"ok": True, "result": result}
 
 

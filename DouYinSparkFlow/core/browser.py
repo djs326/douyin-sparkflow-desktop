@@ -1,5 +1,6 @@
 import os
 import re
+import shutil
 import subprocess
 import sys
 import traceback
@@ -19,18 +20,34 @@ def _local_browser_bundle_path():
     return Path(__file__).resolve().parent / PLAYWRIGHT_BROWSERS_PATH
 
 
-def configure_playwright_environment():
-    if os.getenv("PLAYWRIGHT_BROWSERS_PATH"):
-        return
+def system_browser_executable():
+    """探测用户本机的 Chromium 内核浏览器（Edge → Chrome），供 Playwright 直接调用。
 
-    env = get_environment()
-    if env == Environment.PACKED:
-        bundle_path = Path(sys.executable).resolve().parent / "chrome"
+    桌面版不再内置浏览器，优先用 Windows 自带的 Edge，其次 Chrome。
+    """
+    candidates = []
+    if os.name == "nt":
+        candidates = [
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        ]
     else:
-        bundle_path = _local_browser_bundle_path()
+        for name in ("msedge", "microsoft-edge", "google-chrome", "chromium", "chromium-browser"):
+            found = shutil.which(name)
+            if found:
+                candidates.append(found)
+    for candidate in candidates:
+        if Path(candidate).exists():
+            return candidate
+    return None
 
-    if bundle_path.exists():
-        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(bundle_path.resolve())
+
+def configure_playwright_environment():
+    # 桌面版使用用户本机浏览器（system_browser_executable 探测），
+    # 不再需要内置浏览器路径；保留空实现以兼容既有调用点。
+    return
 
 
 def _headless_for(GUI=False):
@@ -82,17 +99,27 @@ def _douyin_browser_proxy(network_mode=None):
 def _browser_launch_options(GUI=False, network_mode=None):
     args = _browser_args()
     proxy = _douyin_browser_proxy(network_mode=network_mode)
+    options = {}
+    executable = system_browser_executable()
+    if executable:
+        options["executable_path"] = executable
     if proxy:
-        return {
-            "headless": _headless_for(GUI),
-            "args": args,
-            "proxy": {"server": proxy},
-        }
-    args.append("--no-proxy-server")
-    return {
-        "headless": _headless_for(GUI),
-        "args": args,
-    }
+        options.update(
+            {
+                "headless": _headless_for(GUI),
+                "args": args,
+                "proxy": {"server": proxy},
+            }
+        )
+    else:
+        args.append("--no-proxy-server")
+        options.update(
+            {
+                "headless": _headless_for(GUI),
+                "args": args,
+            }
+        )
+    return options
 
 
 async def select_douyin_network_mode(target_url):

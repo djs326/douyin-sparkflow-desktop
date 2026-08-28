@@ -123,53 +123,38 @@
     data-display-mode="{{ login_desktop_display_mode }}"
     data-csrf-token="{{ csrf_token }}"
   >
-    <div class="login-dialog-head">
-      <strong>扫码登录抖音</strong>
-      <p id="login-desktop-status-text">登录浏览器已在后台运行，二维码加载后请用手机抖音扫码。</p>
+    <div class="login-dialog-top">
+      <div class="login-dialog-head">
+        <strong>扫码登录抖音</strong>
+        <p id="login-desktop-status-text">登录浏览器已在后台运行，二维码加载后请用手机抖音扫码。</p>
+      </div>
+      <button class="login-dialog-x" type="button" data-login-dialog-close aria-label="关闭登录" title="停止后台浏览器并关闭">
+        <i data-lucide="x"></i>
+      </button>
     </div>
     <div class="login-dialog-body">
       <img class="login-qr-image" data-login-qr alt="抖音登录二维码" hidden>
       <p class="muted compact" data-login-qr-status>二维码加载中...</p>
-      <div class="button-row login-dialog-tools">
-        <button class="button button-soft" type="button" data-refresh-login-qr>
-          <i data-lucide="refresh-cw"></i><span>刷新二维码</span>
-        </button>
-        <a class="button button-quiet" href="/login-desktop/qr" target="_blank" rel="noopener">
-          <i data-lucide="maximize-2"></i><span>单独打开</span>
-        </a>
-        <button class="button button-quiet" type="button" data-focus-native-browser>
-          <i data-lucide="popout"></i><span>弹出独立窗口</span>
-        </button>
-      </div>
     </div>
     <div class="login-dialog-foot">
-      <button class="button button-primary login-desktop-save" type="button" data-relogin-unique-id="" data-login-mode="add">
-        <i data-lucide="save"></i><span>保存新账号登录</span>
+      <button class="button button-soft" type="button" data-refresh-login-qr>
+        <i data-lucide="refresh-cw"></i><span>刷新二维码</span>
       </button>
-      <button
-        class="button button-quiet login-desktop-close"
-        type="button"
-        data-confirm-title="关闭登录界面"
-        data-confirm="当前未保存的登录过程会被关闭，登录界面会恢复初始状态。确认继续吗？"
-        data-confirm-accept="确认关闭"
-      >
-        <i data-lucide="x-circle"></i><span>关闭登录界面</span>
+      <button class="button button-quiet" type="button" data-focus-native-browser>
+        <i data-lucide="popout"></i><span>弹出窗口</span>
       </button>
-      {% if is_admin %}
       <button
         class="button button-quiet login-desktop-reset"
         type="button"
-        data-confirm-title="强制重置登录工作区"
-        data-confirm="会清理当前登录环境并切换队列中的下一位用户。确认继续吗？"
+        data-confirm-title="重新开始登录"
+        data-confirm="将停止并清理当前登录环境，然后重新打开登录页。确认继续吗？"
         data-confirm-accept="确认重置"
       >
         <i data-lucide="rotate-ccw"></i><span>重置工作区</span>
       </button>
-      {% endif %}
-      <button class="button button-quiet" type="button" data-copy-login-url>
-        <i data-lucide="copy"></i><span>复制地址</span>
+      <button class="button button-primary login-desktop-save" type="button" data-relogin-unique-id="" data-login-mode="add">
+        <i data-lucide="save"></i><span>保存新账号登录</span>
       </button>
-      <button class="button button-quiet" type="button" data-login-dialog-close>关闭</button>
     </div>
   </div>
 </dialog>
@@ -180,8 +165,20 @@
   (() => {
     const dialog = document.getElementById("login-dialog");
     if (!dialog) return;
+    const controls = document.getElementById("login-desktop-controls");
+    const csrf = controls ? controls.dataset.csrfToken || "" : "";
+    // 右上角 ✕：停止后台登录浏览器并释放工作区，然后关闭弹窗
     dialog.querySelectorAll("[data-login-dialog-close]").forEach((button) => {
-      button.addEventListener("click", () => dialog.close());
+      button.addEventListener("click", async () => {
+        try {
+          const body = new FormData();
+          body.set("csrf_token", csrf);
+          await fetch("/login-desktop/close", { method: "POST", body, credentials: "same-origin" });
+        } catch (err) {
+          // 无工作区时忽略错误，直接关闭弹窗
+        }
+        dialog.close();
+      });
     });
   })();
 </script>

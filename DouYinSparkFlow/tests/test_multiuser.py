@@ -54,31 +54,37 @@ class MultiUserTests(unittest.TestCase):
         self.assertTrue(users.delete_web_user("zxb"))
         self.assertEqual([], users.get_web_users())
 
-    def test_fifo_queue_promotes_after_active_release(self):
-        with patch.object(login_lock, "LOCK_PATH", self.lock_path):
-            first = login_lock.request_workspace(username="zxb", session_id="s1", account_ref="a1", mode="relogin")
-            second = login_lock.request_workspace(username="zcf", session_id="s2", account_ref="", mode="add")
+    def test_workspace_activates_heartbeats_and_releases(self):
+        # 单机语义：直接激活，心跳续期，释放清空
+        with patch.object(login_lock, "LOCK_PATH", self.lock_path), patch.object(login_lock, "LOCK_TTL_SECONDS", 60):
+            first = login_lock.request_workspace(username="zxb", session_id="s1", account_ref="a1", mode="add")
             self.assertEqual("active", first["state"])
-            self.assertEqual("queued", second["state"])
-            self.assertEqual("add", second["request"]["mode"])
-            self.assertEqual(1, second["position"])
-            self.assertEqual("queued", login_lock.workspace_status(username="zcf", session_id="s2")["state"])
+            # 再次请求（本人）续期并保持 active
+            again = login_lock.request_workspace(username="zxb", session_id="s1", account_ref="a1", mode="add")
+            self.assertEqual("active", again["state"])
+            self.assertTrue(login_lock.heartbeat(username="zxb", session_id="s1", ticket=first["request"]["ticket"], account_ref="a1"))
+            status = login_lock.workspace_status(username="zxb", session_id="s1")
+            self.assertEqual("active", status["state"])
+            self.assertGreater(status["remaining_seconds"], 0)
             released = login_lock.begin_release(username="zxb", session_id="s1", ticket=first["request"]["ticket"], account_ref="a1")
             self.assertIsNotNone(released)
-            promoted = login_lock.finish_transition()
-            self.assertEqual("zcf", promoted["username"])
-            self.assertEqual("active", login_lock.workspace_status(username="zcf", session_id="s2")["state"])
+            self.assertIsNone(login_lock.get_lock())
+            # 释放后可重新激活
+            reopened = login_lock.request_workspace(username="zxb", session_id="s1", account_ref="a1", mode="add")
+            self.assertEqual("active", reopened["state"])
 
-    def test_login_workspace_is_serialized_and_expires(self):
+    def test_workspace_expires_and_force_reset_clears(self):
         with patch.object(login_lock, "LOCK_PATH", self.lock_path), patch.object(login_lock, "LOCK_TTL_SECONDS", 1):
-            ok, lock = login_lock.acquire(username="zxb", session_id="s1", account_ref="a1")
-            self.assertTrue(ok)
-            self.assertTrue(login_lock.owns(lock, username="zxb", session_id="s1", account_ref="a1"))
-            blocked, current = login_lock.acquire(username="zcf", session_id="s2", account_ref="a2")
-            self.assertFalse(blocked)
-            self.assertEqual("zxb", current["username"])
-            self.assertTrue(login_lock.refresh(username="zxb", session_id="s1", account_ref="a1"))
-            self.assertTrue(login_lock.release(username="zxb", session_id="s1"))
+            login_lock.request_workspace(username="zxb", session_id="s1", account_ref="a1", mode="add")
+            self.assertIsNotNone(login_lock.get_lock())
+            import time as _time
+            _time.sleep(1.1)
+            # 过期后可被新请求接管
+            reopened = login_lock.request_workspace(username="zxb", session_id="s1", account_ref="a1", mode="add")
+            self.assertEqual("active", reopened["state"])
+            # 强制重置清空
+            reset = login_lock.begin_force_reset()
+            self.assertIsNotNone(reset)
             self.assertIsNone(login_lock.get_lock())
 
 

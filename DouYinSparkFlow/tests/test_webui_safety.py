@@ -264,7 +264,7 @@ class WebUiSafetyTests(unittest.TestCase):
         workspace = (Path(app_module.TEMPLATES_DIR) / "accounts.html").read_text(encoding="utf-8")
         self.assertIn("data-login-qr", workspace)
         self.assertIn("data-refresh-login-qr", workspace)
-        self.assertIn("/login-desktop/qr", workspace)
+        self.assertIn("login-desktop-controls", workspace)
         # 登录工作区已并入账号管理页，首页保留任务状态横幅与实时轮询入口
         dashboard = (Path(app_module.TEMPLATES_DIR) / "dashboard.html").read_text(encoding="utf-8")
         self.assertIn("data-overview-root", dashboard)

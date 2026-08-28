@@ -1598,6 +1598,7 @@ def create_app():
 
     @app.post("/login-desktop/reset")
     async def login_desktop_reset(request: Request):
+        # 单机语义的"重新开始登录"：释放工作区 → 清理登录 profile → 重启浏览器 → 重新申请工作区 → 打开登录页
         maybe_redirect = require_user(request)
         if maybe_redirect:
             return JSONResponse({"redirect": "/login"}, status_code=401)
@@ -1605,16 +1606,40 @@ def create_app():
         if not validate_csrf(request, str(form.get("csrf_token", ""))):
             return JSONResponse({"ok": False, "error": "Invalid CSRF token"}, status_code=403)
         current = principal(request)
-        if current.get("role") == "admin":
-            await _reset_and_promote(force=True, clear_queue=str(form.get("clear_queue", "")) == "1")
-            return JSONResponse({"ok": True, "workspace": _workspace_payload(request)})
+
         active = get_login_lock()
-        if not owns_login_lock(active, username=current["username"], session_id=current.get("session_id", "")):
-            kind, _ = cancel_login_request(username=current["username"], session_id=current.get("session_id", ""))
-            return JSONResponse({"ok": kind == "queued", "workspace": _workspace_payload(request)})
-        begin_login_release(username=current["username"], session_id=current.get("session_id", ""), ticket=active.get("ticket", ""), account_ref=active.get("account_ref", ""))
-        await _reset_and_promote()
-        return JSONResponse({"ok": True, "workspace": _workspace_payload(request)})
+        if active and owns_login_lock(active, username=current["username"], session_id=current.get("session_id", "")):
+            begin_login_release(
+                username=current["username"],
+                session_id=current.get("session_id", ""),
+                ticket=active.get("ticket", ""),
+                account_ref=active.get("account_ref", ""),
+            )
+        # 单机无排队：结束 resetting 过渡态，直接清空状态，避免重新申请时进入排队
+        finish_login_transition()
+        try:
+            # 停止浏览器并清理 profile（login-desktop /reset = stop(clear_profile=True) + start）
+            call_login_desktop("/reset", method="POST", payload={}, timeout=120)
+        except RuntimeError as exc:
+            logger.error("Failed to reset login browser: %s", exc)
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+
+        result = request_workspace(
+            username=current["username"],
+            session_id=current.get("session_id", ""),
+            account_ref="",
+            mode="add",
+        )
+        if result["state"] == "full":
+            return JSONResponse({"ok": False, "error": "登录排队人数已满，请稍后重试"}, status_code=429)
+        if result["state"] == "queued":
+            return JSONResponse({"ok": True, "state": "queued", "workspace": _workspace_payload(request)}, status_code=202)
+        try:
+            call_login_desktop("/open-login", method="POST", payload={}, timeout=90)
+        except RuntimeError as exc:
+            logger.error("Failed to open login page after reset: %s", exc)
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=503)
+        return JSONResponse({"ok": True, "state": "active", "workspace": _workspace_payload(request)})
 
     @app.post("/login-desktop/save")
     async def login_desktop_save(request: Request):
@@ -1663,6 +1688,12 @@ def create_app():
                 refs = list(dict.fromkeys(list(current.get("account_refs", [])) + [account.get("account_ref", "")]))
                 update_web_user(current["username"], account_refs=refs)
             begin_login_release(username=current["username"], session_id=current.get("session_id", ""), ticket=active.get("ticket", ""), account_ref=active.get("account_ref", ""))
+            # 保存成功后立即停止登录浏览器（释放内存；工作区已释放，
+            # _reset_and_promote 不会触发浏览器关闭，这里显式处理）
+            try:
+                call_login_desktop("/close", method="POST", payload={}, timeout=60)
+            except RuntimeError as exc:
+                logger.warning("Failed to close login browser after save: %s", exc)
             await _reset_and_promote()
             return JSONResponse({
                 "ok": True,

@@ -52,14 +52,14 @@ if (-not $Iscc -and -not $AppOnly) {
 # ---------- 1. build venv + deps ----------
 New-Item -ItemType Directory -Force -Path $BuildRoot | Out-Null
 if (-not (Test-Path (Join-Path $VenDir "Scripts\python.exe"))) {
-    Write-Host "[1/6] Creating build venv..." -ForegroundColor Yellow
+    Write-Host "[1/5] Creating build venv..." -ForegroundColor Yellow
     python -m venv $VenDir
 } else {
-    Write-Host "[1/6] Reusing build venv..." -ForegroundColor Yellow
+    Write-Host "[1/5] Reusing build venv..." -ForegroundColor Yellow
 }
 $VenPy = Join-Path $VenDir "Scripts\python.exe"
 
-Write-Host "[2/6] Installing dependencies (Tsinghua PyPI mirror)..."
+Write-Host "[2/5] Installing dependencies (Tsinghua PyPI mirror)..."
 & $VenPy -m pip install --upgrade pip -q
 if ($env:SPARKFLOW_BUILD_NO_MIRROR) {
     # CI (GitHub Actions) runs outside China: skip the Tsinghua mirror.
@@ -70,20 +70,13 @@ if ($env:SPARKFLOW_BUILD_NO_MIRROR) {
 }
 if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 
-# ---------- 2. Playwright Chromium ----------
-Write-Host "[3/6] Downloading Playwright Chromium (about 170MB on first run)..."
-$BrowsersDir = Join-Path $BuildRoot "ms-playwright"
-$env:PLAYWRIGHT_BROWSERS_PATH = $BrowsersDir
-& $VenPy -m playwright install chromium
-if ($LASTEXITCODE -ne 0) { throw "Playwright browser download failed" }
-
-# ---------- 3. bundled Node (node.exe is self-contained) ----------
-Write-Host "[4/6] Locating Node runtime..."
+# ---------- 2. bundled Node (node.exe is self-contained) ----------
+Write-Host "[3/5] Locating Node runtime..."
 $NodeExe = (Get-Command node -ErrorAction SilentlyContinue).Source
 if (-not $NodeExe) { throw "Node.js 18+ not found in PATH (needed for the protocol sender)" }
 
-# ---------- 4. PyInstaller (spec file avoids CLI arg pitfalls) ----------
-Write-Host "[5/6] PyInstaller packaging..."
+# ---------- 3. PyInstaller (spec file avoids CLI arg pitfalls) ----------
+Write-Host "[4/5] PyInstaller packaging..."
 $LauncherPy  = Join-Path $SourceDir "launcher.py"
 $IconPath    = Join-Path $PSScriptRoot "app.ico"
 $SpecPath    = Join-Path $BuildRoot "DouYinSparkFlow.spec"
@@ -157,18 +150,13 @@ Set-Content -Path $SpecPath -Value $spec -Encoding UTF8
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 
 # ---------- 5. assemble app dir ----------
-Write-Host "[6/6] Assembling app directory..."
+Write-Host "[5/5] Assembling app directory..."
 if (Test-Path $AppDistDir) { Remove-Item -Recurse -Force $AppDistDir }
 $PyOut = Join-Path $DistRoot $AppName
 if (-not (Test-Path $PyOut)) { throw "PyInstaller output not found: $PyOut (clean dist/ and retry)" }
 Move-Item $PyOut $AppDistDir
 
-$ChromeDir = Join-Path $AppDistDir "chrome"
-New-Item -ItemType Directory -Force -Path $ChromeDir | Out-Null
-Get-ChildItem $BrowsersDir -Directory | ForEach-Object {
-    Copy-Item -Recurse -Force $_.FullName (Join-Path $ChromeDir $_.Name)
-}
-
+# 浏览器使用用户本机的 Edge/Chrome（system_browser_executable 探测），不再内置 Chromium
 $NodeDir = Join-Path $AppDistDir "node"
 New-Item -ItemType Directory -Force -Path $NodeDir | Out-Null
 Copy-Item -Force $NodeExe (Join-Path $NodeDir "node.exe")

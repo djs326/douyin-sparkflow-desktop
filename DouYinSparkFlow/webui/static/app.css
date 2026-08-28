@@ -80,6 +80,16 @@ html[data-theme="dark"] {
   box-sizing: border-box;
 }
 
+/* 全局隐藏滚动条外观（保留滚动功能） */
+* {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+*::-webkit-scrollbar {
+  display: none;
+}
+
 /* hidden 属性必须始终生效（作者样式 display 会覆盖 UA 默认规则） */
 [hidden] {
   display: none !important;
@@ -2554,6 +2564,38 @@ html[data-theme="dark"] .login-theme-toggle:hover {
   gap: 5px;
 }
 
+.login-dialog-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.login-dialog-top .login-dialog-head {
+  flex: 1;
+  padding: 18px 0 0 22px;
+}
+
+.login-dialog-x {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  margin: 14px 14px 0 0;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.login-dialog-x:hover {
+  background: var(--surface-soft);
+  color: var(--text);
+}
+
 .login-dialog-head strong {
   font-size: 16px;
 }
@@ -2597,6 +2639,10 @@ html[data-theme="dark"] .login-theme-toggle:hover {
   gap: 8px;
   flex-wrap: wrap;
   padding: 14px 22px 18px;
+}
+
+.login-dialog-foot .login-desktop-save {
+  margin-left: 4px;
 }
 
 /* ---------------- 系统设置页 ---------------- */

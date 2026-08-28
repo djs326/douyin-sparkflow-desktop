@@ -1,4 +1,8 @@
-"""Shared login-desktop workspace lease and FIFO queue."""
+"""登录工作区租约（单机语义，无多用户排队）。
+
+本地单机应用：只有一个用户使用登录工作区，直接激活/续期/释放，
+不再有 FIFO 队列与 resetting 过渡态。
+"""
 
 from __future__ import annotations
 
@@ -30,12 +34,11 @@ def _default_lock_path() -> Path:
 
 LOCK_PATH = _default_lock_path()
 LOCK_TTL_SECONDS = 180
-QUEUE_MAX_SIZE = 32
 _MUTEX = threading.Lock()
 
 
 def _empty_state() -> dict:
-    return {"version": 2, "phase": "idle", "active": None, "queue": []}
+    return {"version": 2, "phase": "idle", "active": None}
 
 
 def _read_raw() -> dict | None:
@@ -49,12 +52,11 @@ def _read_raw() -> dict | None:
 def _normalize_state(data: dict | None) -> dict:
     if not data:
         return _empty_state()
-    if "active" in data or "queue" in data:
+    if "active" in data:
         state = _empty_state()
-        state.update({key: data.get(key) for key in ("version", "phase", "active", "queue")})
+        state.update({key: data.get(key) for key in ("version", "phase", "active")})
         state["version"] = 2
         state["phase"] = str(state.get("phase") or ("active" if state.get("active") else "idle"))
-        state["queue"] = [item for item in (state.get("queue") or []) if isinstance(item, dict)]
         return state
     # Backward compatibility with the original single-lock file.
     legacy = dict(data)
@@ -63,7 +65,7 @@ def _normalize_state(data: dict | None) -> dict:
     legacy.setdefault("requested_at", now)
     legacy.setdefault("started_at", legacy.get("acquired_at", now))
     legacy.setdefault("last_heartbeat_at", legacy.get("acquired_at", now))
-    return {"version": 2, "phase": "active", "active": legacy, "queue": []}
+    return {"version": 2, "phase": "active", "active": legacy}
 
 
 def _write_state(state: dict) -> None:
@@ -99,108 +101,53 @@ def _expired(active: dict | None, now: float | None = None) -> bool:
         return False
     now = _now() if now is None else now
     try:
-        return now - float(active.get("last_heartbeat_at", active.get("acquired_at", 0))) > LOCK_TTL_SECONDS
+        last_heartbeat = float(active.get("last_heartbeat_at") or 0)
     except (TypeError, ValueError):
-        return True
+        last_heartbeat = 0
+    return (now - last_heartbeat) > LOCK_TTL_SECONDS
 
 
-def _public_item(item: dict | None) -> dict | None:
-    if not item:
-        return None
+def _new_item(username: str, session_id: str, account_ref: str, now: float, mode: str = "add") -> dict:
     return {
-        "ticket": item.get("ticket", ""),
-        "username": item.get("username", ""),
-        "account_ref": item.get("account_ref", ""),
-        "requested_at": item.get("requested_at", 0),
-        "started_at": item.get("started_at", 0),
-        "last_heartbeat_at": item.get("last_heartbeat_at", 0),
-    }
-
-
-def get_workspace_state() -> dict:
-    with _MUTEX:
-        return deepcopy(_normalize_state(_read_raw()))
-
-
-def get_lock() -> dict | None:
-    """Compatibility helper: return the current active lease only."""
-    return get_workspace_state().get("active")
-
-
-def owns(lock: dict | None, *, username: str, session_id: str, account_ref: str | None = None, ticket: str | None = None) -> bool:
-    if not lock:
-        return False
-    if str(lock.get("username")) != str(username) or str(lock.get("session_id")) != str(session_id):
-        return False
-    if account_ref is not None and str(lock.get("account_ref", "")) != str(account_ref):
-        return False
-    if ticket is not None and str(lock.get("ticket", "")) != str(ticket):
-        return False
-    return True
-
-
-def _new_item(username: str, session_id: str, account_ref: str, now: float, mode: str = "relogin") -> dict:
-    return {
-        "ticket": "ticket-" + uuid.uuid4().hex,
-        "mode": mode if mode in {"relogin", "add"} else "relogin",
+        "ticket": uuid.uuid4().hex,
         "username": username,
         "session_id": session_id,
-        "account_ref": account_ref,
+        "account_ref": account_ref or "",
+        "mode": mode,
         "requested_at": now,
         "started_at": now,
         "last_heartbeat_at": now,
     }
 
 
-def find_request(state: dict, *, username: str, session_id: str) -> tuple[str, dict | None, int]:
-    active = state.get("active")
-    if active and str(active.get("username")) == str(username) and str(active.get("session_id")) == str(session_id):
-        return "active", active, 0
-    for index, item in enumerate(state.get("queue") or [], start=1):
-        if str(item.get("username")) == str(username) and str(item.get("session_id")) == str(session_id):
-            return "queued", item, index
-    return "none", None, -1
+def owns(active: dict | None, *, username=None, session_id=None, account_ref=None, ticket=None) -> bool:
+    if not active:
+        return False
+    if username is not None and str(active.get("username")) != str(username):
+        return False
+    if session_id is not None and str(active.get("session_id")) != str(session_id):
+        return False
+    if account_ref is not None and str(active.get("account_ref")) != str(account_ref):
+        return False
+    if ticket is not None and str(active.get("ticket")) != str(ticket):
+        return False
+    return True
 
 
 def request_workspace(*, username: str, session_id: str, account_ref: str = "", mode: str = "relogin") -> dict:
+    # 单机：直接激活（本机使用中则续期，否则创建新租约）
     with _MUTEX:
         state = _normalize_state(_read_raw())
         now = _now()
-        if state.get("phase") == "resetting":
-            queue = state.setdefault("queue", [])
-            kind, existing, position = find_request(state, username=username, session_id=session_id)
-            if kind == "queued":
-                return {"state": "queued", "position": position, "request": deepcopy(existing), "workspace": state}
-            if len(queue) >= QUEUE_MAX_SIZE:
-                return {"state": "full", "position": -1, "request": None, "workspace": state}
-            item = _new_item(username, session_id, account_ref, now, mode=mode)
-            item["started_at"] = 0
-            item["last_heartbeat_at"] = 0
-            queue.append(item)
+        active = state.get("active")
+        if owns(active, username=username, session_id=session_id):
+            active["last_heartbeat_at"] = now
             _write_state(state)
-            return {"state": "queued", "position": len(queue), "request": deepcopy(item), "workspace": state}
-        elif state.get("active") and not _expired(state["active"], now):
-            kind, existing, position = find_request(state, username=username, session_id=session_id)
-            if kind == "active":
-                existing["last_heartbeat_at"] = now
-                _write_state(state)
-                return {"state": "active", "position": 0, "request": deepcopy(existing), "workspace": state}
-            if kind == "queued":
-                return {"state": "queued", "position": position, "request": deepcopy(existing), "workspace": state}
-            queue = state.setdefault("queue", [])
-            if len(queue) >= QUEUE_MAX_SIZE:
-                return {"state": "full", "position": -1, "request": None, "workspace": state}
-            item = _new_item(username, session_id, account_ref, now, mode=mode)
-            item["started_at"] = 0
-            item["last_heartbeat_at"] = 0
-            queue.append(item)
-            _write_state(state)
-            return {"state": "queued", "position": len(queue), "request": deepcopy(item), "workspace": state}
-        else:
-            item = _new_item(username, session_id, account_ref, now, mode=mode)
-            state = {"version": 2, "phase": "active", "active": item, "queue": state.get("queue", [])}
-            _write_state(state)
-            return {"state": "active", "position": 0, "request": deepcopy(item), "workspace": state}
+            return {"state": "active", "position": 0, "request": deepcopy(active), "workspace": state}
+        item = _new_item(username, session_id, account_ref, now, mode=mode)
+        state = {"version": 2, "phase": "active", "active": item}
+        _write_state(state)
+        return {"state": "active", "position": 0, "request": deepcopy(item), "workspace": state}
 
 
 def heartbeat(*, username: str, session_id: str, ticket: str = "", account_ref: str = "") -> bool:
@@ -215,33 +162,26 @@ def heartbeat(*, username: str, session_id: str, ticket: str = "", account_ref: 
 
 
 def begin_expiration() -> dict | None:
+    # 过期清理：直接清空状态
     with _MUTEX:
         state = _normalize_state(_read_raw())
         if state.get("phase") != "active" or not _expired(state.get("active")):
             return None
         old = deepcopy(state.get("active"))
-        state["phase"] = "resetting"
-        state["active"] = None
-        state["transition_reason"] = "heartbeat_timeout"
-        state["transition_at"] = _now()
-        _write_state(state)
+        _delete_state()
         return old
 
 
 def begin_force_reset(*, clear_queue: bool = False) -> dict | None:
+    # 单机强制重置：无条件清空当前工作区
     with _MUTEX:
         state = _normalize_state(_read_raw())
-        active = deepcopy(state.get("active"))
-        if not active and not state.get("queue"):
+        active = state.get("active")
+        if not active:
             return None
-        state["phase"] = "resetting"
-        state["active"] = None
-        if clear_queue:
-            state["queue"] = []
-        state["transition_reason"] = "admin_reset"
-        state["transition_at"] = _now()
-        _write_state(state)
-        return active
+        old = deepcopy(active)
+        _delete_state()
+        return old
 
 
 def begin_release(*, username: str, session_id: str, ticket: str = "", account_ref: str = "") -> dict | None:
@@ -251,98 +191,38 @@ def begin_release(*, username: str, session_id: str, ticket: str = "", account_r
         if not owns(active, username=username, session_id=session_id, account_ref=account_ref or None, ticket=ticket or None):
             return None
         old = deepcopy(active)
-        state["phase"] = "resetting"
-        state["active"] = None
-        state["transition_reason"] = "released"
-        state["transition_at"] = _now()
-        _write_state(state)
+        _delete_state()
         return old
 
 
+def cancel_request(*, username: str, session_id: str, ticket: str = "") -> tuple[str, dict | None]:
+    old = begin_release(username=username, session_id=session_id, ticket=ticket)
+    if old:
+        return "cancelled", old
+    return "none", None
+
+
 def finish_transition() -> dict | None:
+    # 单机无排队：直接清空状态
     with _MUTEX:
-        state = _normalize_state(_read_raw())
-        queue = state.get("queue") or []
-        if queue:
-            item = queue.pop(0)
-            now = _now()
-            item["started_at"] = now
-            item["last_heartbeat_at"] = now
-            state["phase"] = "active"
-            state["active"] = item
-            state["queue"] = queue
-            state.pop("transition_reason", None)
-            state.pop("transition_at", None)
-            _write_state(state)
-            return deepcopy(item)
         _delete_state()
         return None
 
 
-def cancel_request(*, username: str, session_id: str, ticket: str = "") -> tuple[str, dict | None]:
-    with _MUTEX:
-        state = _normalize_state(_read_raw())
-        active = state.get("active")
-        if owns(active, username=username, session_id=session_id, ticket=ticket or None):
-            state["phase"] = "resetting"
-            state["active"] = None
-            state["transition_reason"] = "cancelled"
-            state["transition_at"] = _now()
-            _write_state(state)
-            return "active", deepcopy(active)
-        queue = state.get("queue") or []
-        for index, item in enumerate(queue):
-            if str(item.get("username")) == str(username) and str(item.get("session_id")) == str(session_id) and (not ticket or str(item.get("ticket")) == str(ticket)):
-                removed = queue.pop(index)
-                state["queue"] = queue
-                if queue or state.get("active"):
-                    _write_state(state)
-                else:
-                    _delete_state()
-                return "queued", deepcopy(removed)
-        return "none", None
+def get_workspace_state() -> dict:
+    return _normalize_state(_read_raw())
+
+
+def get_lock() -> dict | None:
+    return get_workspace_state().get("active")
 
 
 def workspace_status(*, username: str, session_id: str) -> dict:
     state = get_workspace_state()
-    kind, item, position = find_request(state, username=username, session_id=session_id)
-    if kind == "active":
-        remaining = max(0, int(LOCK_TTL_SECONDS - (_now() - float(item.get("last_heartbeat_at", _now())))))
-        return {"state": "active", "position": 0, "ticket": item.get("ticket", ""), "remaining_seconds": remaining, "workspace": state}
-    if kind == "queued":
-        return {"state": "queued", "position": position, "ticket": item.get("ticket", ""), "remaining_seconds": 0, "workspace": state}
-    if state.get("phase") == "resetting":
-        return {"state": "resetting", "position": 0, "ticket": "", "remaining_seconds": 0, "workspace": state}
+    active = state.get("active")
+    if owns(active, username=username, session_id=session_id):
+        remaining = max(0, int(LOCK_TTL_SECONDS - (_now() - float(active.get("last_heartbeat_at", _now())))))
+        return {"state": "active", "position": 0, "ticket": active.get("ticket", ""), "remaining_seconds": remaining, "workspace": state}
+    if active and not _expired(active):
+        return {"state": "active", "position": 0, "ticket": "", "remaining_seconds": 0, "workspace": state}
     return {"state": "closed", "position": 0, "ticket": "", "remaining_seconds": 0, "workspace": state}
-
-
-# Backward-compatible single-lease helpers used by existing tests and callers.
-def acquire(*, username: str, session_id: str, account_ref: str = "", force: bool = False) -> tuple[bool, dict | None]:
-    with _MUTEX:
-        state = _normalize_state(_read_raw())
-        if force:
-            state = _empty_state()
-        active = state.get("active")
-        if active and not owns(active, username=username, session_id=session_id, account_ref=account_ref):
-            return False, active
-    result = request_workspace(username=username, session_id=session_id, account_ref=account_ref)
-    return result["state"] == "active", result.get("request")
-
-
-def refresh(*, username: str, session_id: str, account_ref: str = "") -> bool:
-    return heartbeat(username=username, session_id=session_id, account_ref=account_ref)
-
-
-def release(*, username: str | None = None, session_id: str | None = None, force: bool = False) -> bool:
-    with _MUTEX:
-        state = _normalize_state(_read_raw())
-        active = state.get("active")
-        if not active:
-            return False
-        if not force:
-            if username is not None and str(active.get("username")) != str(username):
-                return False
-            if session_id is not None and str(active.get("session_id")) != str(session_id):
-                return False
-        _delete_state()
-        return True
