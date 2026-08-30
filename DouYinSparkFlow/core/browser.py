@@ -11,6 +11,7 @@ from playwright.async_api import async_playwright
 from rich.console import Console
 
 from utils.config import DEBUG, Environment, data_dir, get_app_settings, get_environment, repo_root
+from utils.process import hidden_startupinfo
 
 
 console = Console()
@@ -177,7 +178,11 @@ def browser_profile_root(root=None):
 
 async def install_browser():
     try:
-        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+        subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            check=True,
+            startupinfo=hidden_startupinfo(),
+        )
         console.print("[bold green]Browser install completed. Please run the command again.[/bold green]")
     except subprocess.CalledProcessError as exc:
         console.print(f"[bold red]Browser install failed: {exc}[/bold red]")
