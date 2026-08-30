@@ -158,7 +158,7 @@ def _random_delay_seconds(send_strategy, min_key, max_key):
 async def _sleep_with_log(seconds, reason, account_name):
     if seconds <= 0:
         return
-    logger.info("%s for %s by %ss", reason, account_name, seconds)
+    logger.info("%s：账号 %s，等待 %ss", reason, account_name, seconds)
     await asyncio.sleep(seconds)
 
 
@@ -356,7 +356,7 @@ async def apply_stored_cookies_to_profile(context, cookies, account_name, only_w
             return
 
     await context.add_cookies(cookies)
-    logger.info("Applied %s stored cookies to persistent profile for %s", len(cookies), account_name)
+    logger.info("已应用 %s 条存储的 Cookies（账号=%s）", len(cookies), account_name)
 
 
 async def refresh_stored_cookies_from_profile(context, user, account_name):
@@ -1540,10 +1540,10 @@ async def scroll_and_select_user(page, user, account_name, targets, friend_scan_
             matched_target_name = normalized_targets.get(normalized_target_name)
             if matched_target_name and normalized_target_name in remaining_targets:
                 await element.click()
-                logger.info("Account %s selected target friend %s", account_name, target_name)
+                logger.info("账号 %s 已选中目标好友 %s", account_name, target_name)
                 if matched_target_name != target_name:
                     logger.info(
-                        "Account %s normalized target %r matched visible friend %r",
+                        "账号 %s 规范化目标 %r 匹配到页面显示好友 %r",
                         account_name,
                         matched_target_name,
                         target_name,
@@ -1565,7 +1565,7 @@ async def scroll_and_select_user(page, user, account_name, targets, friend_scan_
                 remaining_targets.discard(normalized_target_name)
                 clicked_delivery_target = True
                 if not remaining_targets and not remaining_index_targets:
-                    logger.info("Account %s found all delivery and indexed target friends", account_name)
+                    logger.info("账号 %s 已找到全部待发送与索引目标好友", account_name)
                     persist_index(True)
                     return
                 break
@@ -1573,7 +1573,7 @@ async def scroll_and_select_user(page, user, account_name, targets, friend_scan_
             continue
 
         if not remaining_targets and not remaining_index_targets:
-            logger.info("Account %s found all delivery and indexed target friends", account_name)
+            logger.info("账号 %s 已找到全部待发送与索引目标好友", account_name)
             persist_index(True)
             return
 
@@ -1779,7 +1779,7 @@ def _account_paused_by_failure_today(user, now):
     if elapsed_seconds < cooldown_seconds:
         remaining_seconds = int(cooldown_seconds - elapsed_seconds)
         logger.info(
-            "Account %s temporary account failure category=%s cooling down for %ss",
+            "账号 %s 临时性失败（分类=%s）冷却中，剩余 %ss",
             user.get("username") or user.get("unique_id") or "unknown",
             category,
             remaining_seconds,
@@ -1787,7 +1787,7 @@ def _account_paused_by_failure_today(user, now):
         return True
 
     logger.info(
-        "Account %s temporary account failure category=%s cooldown expired; allowing retry",
+        "账号 %s 临时性失败（分类=%s）冷却已结束，允许重试",
         user.get("username") or user.get("unique_id") or "unknown",
         category,
     )
@@ -1977,7 +1977,7 @@ def _prepare_active_users_for_run(active_config, active_user_data):
     now = datetime.now(schedule_tz)
 
     if _manual_run_failed_only():
-        logger.info("SPARKFLOW_MANUAL_RUN=1, retrying queued failures only")
+        logger.info("手动补发：仅重试排队中的失败目标")
         runnable_users = []
         for user in active_user_data:
             retry_targets = _pending_failed_targets(user, now)
@@ -1987,7 +1987,7 @@ def _prepare_active_users_for_run(active_config, active_user_data):
                 if (norm := _normalize_target_name(target)) and _target_sent_today(user, norm, now)
             ]
             logger.info(
-                "manual-retry user=%s retryTargetCount=%s strongConfirmedToday=%s",
+                "手动补发账号=%s 待重试=%s 今日已强确认=%s",
                 user.get("username", "unknown"),
                 len(retry_targets),
                 len(already_sent),
@@ -1997,13 +1997,11 @@ def _prepare_active_users_for_run(active_config, active_user_data):
                 runnable_user["targets"] = retry_targets
                 runnable_users.append(runnable_user)
         if not runnable_users:
-            logger.info("No queued failures are pending for manual retry")
+            logger.info("没有待重试的失败目标")
         return runnable_users
 
     if _manual_run_unsent_only():
-        logger.info(
-            "SPARKFLOW_MANUAL_RUN=1 and SPARKFLOW_MANUAL_UNSENT_ONLY=1, retrying today's unsent targets only"
-        )
+        logger.info("手动补发：仅重试今日未发送的目标")
         runnable_users = []
         for user in active_user_data:
             retry_targets, skipped_targets = _pending_unsent_targets(user, now)
@@ -2013,7 +2011,7 @@ def _prepare_active_users_for_run(active_config, active_user_data):
                 if (norm := _normalize_target_name(target)) and _target_sent_today(user, norm, now)
             ]
             logger.info(
-                "manual-unsent user=%s retryTargetCount=%s strongConfirmedToday=%s skippedCount=%s",
+                "手动补发未发送：账号=%s 待重试=%s 今日已强确认=%s 跳过=%s",
                 user.get("username", "unknown"),
                 len(retry_targets),
                 len(already_sent),
@@ -2024,11 +2022,11 @@ def _prepare_active_users_for_run(active_config, active_user_data):
                 runnable_user["targets"] = retry_targets
                 runnable_users.append(runnable_user)
         if not runnable_users:
-            logger.info("No unsent targets are pending for manual retry")
+            logger.info("没有待补发的未发送目标")
         return runnable_users
 
     if _is_manual_run():
-        logger.info("SPARKFLOW_MANUAL_RUN=1, bypassing daily send window")
+        logger.info("手动执行：不受每日发送窗口限制")
         return [dict(user, targets=list(user.get("targets") or [])) for user in active_user_data]
 
     send_window = _normalize_send_window(active_config)
@@ -2036,7 +2034,7 @@ def _prepare_active_users_for_run(active_config, active_user_data):
         return [dict(user, targets=list(user.get("targets") or [])) for user in active_user_data]
 
     logger.info(
-        "dailySendWindow enabled startHour=%s endHour=%s intervalMinutes=%s timezone=%s now=%s",
+        "每日发送窗口已启用：开始=%s 结束=%s 间隔=%s分钟 时区=%s 当前=%s",
         send_window["startHour"],
         send_window["endHour"],
         send_window["scheduleIntervalMinutes"],
@@ -2048,7 +2046,7 @@ def _prepare_active_users_for_run(active_config, active_user_data):
     for user in active_user_data:
         due_targets, already_sent, pending_targets, queued_failures = _select_due_targets(user, send_window, now)
         logger.info(
-            "windowed user=%s due=%s strongConfirmed=%s pending=%s queuedFailures=%s",
+            "窗口调度账号=%s 到期=%s 已强确认=%s 待发送=%s 排队失败=%s",
             user.get("username", "unknown"),
             len(due_targets),
             len(already_sent),
@@ -2061,7 +2059,7 @@ def _prepare_active_users_for_run(active_config, active_user_data):
             runnable_users.append(runnable_user)
 
     if not runnable_users:
-        logger.info("No targets are due for the current windowed run")
+        logger.info("当前窗口没有到期需要发送的目标")
     return runnable_users
 
 
@@ -2151,7 +2149,7 @@ def _persist_account_send_failure(user, category, reason, attempted_at, affected
     else:
         user.pop("failure_queue", None)
     logger.warning(
-        "Paused browser sends for account %s category=%s affectedTargets=%s reason=%s",
+        "账号 %s 已暂停浏览器发送（原因分类=%s 受影响目标=%s 详情=%s）",
         user.get("username", "unknown"),
         category,
         entry.get("affectedTargets"),
@@ -2237,7 +2235,7 @@ def _persist_browser_send_failure(user, target_name, message, category, reason, 
         matched_account = _find_matching_account(accounts, user)
         if matched_account is None:
             logger.warning(
-                "Could not find account to persist browser send failure for user=%s target=%s",
+                "找不到账号记录，无法记录发送失败（账号=%s 目标=%s）",
                 user.get("username", "unknown"),
                 target_name,
             )
@@ -2269,7 +2267,7 @@ def _persist_browser_send_failure(user, target_name, message, category, reason, 
     user["failure_queue"] = user_queue
 
     logger.warning(
-        "Queued failed browser send for %s/%s category=%s reason=%s",
+        "发送失败已入队（账号=%s 目标=%s 原因分类=%s 详情=%s）",
         user.get("username", "unknown"),
         target_name,
         category,
@@ -2285,7 +2283,7 @@ def _persist_browser_send_success(user, target_name, message, sent_at, server_re
         matched_account = _find_matching_account(accounts, user)
         if matched_account is None:
             logger.warning(
-                "Could not find account to persist browser send history for user=%s target=%s",
+                "找不到账号记录，无法记录发送历史（账号=%s 目标=%s）",
                 user.get("username", "unknown"),
                 target_name,
             )
@@ -2338,7 +2336,7 @@ def _persist_browser_send_success(user, target_name, message, sent_at, server_re
     user.pop("account_failure", None)
 
     logger.info(
-        "Persisted browser send history for %s/%s at %s",
+        "已记录发送成功历史（账号=%s 目标=%s 时间=%s）",
         user.get("username", "unknown"),
         target_name,
         sent_at,
@@ -2526,7 +2524,7 @@ async def run_browser_tasks(active_config, browser_user_data):
     friend_scan_config = _normalize_friend_list_scan_config(active_config)
     profile_config = _normalize_persistent_profile_config(active_config)
     network_mode = await select_douyin_network_mode(CREATOR_HOME_URL)
-    logger.info("Selected Douyin task network route=%s", network_mode)
+    logger.info("已选定抖音网络路由=%s", network_mode)
     semaphore = asyncio.Semaphore(max(1, active_config["taskCount"] if active_config["multiTask"] else 1))
     tasks = []
 
@@ -2625,7 +2623,7 @@ async def do_user_task(browser, user, semaphore, send_strategy, profile_config, 
             except asyncio.TimeoutError:
                 attempted_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
                 reason = f"browser sender exceeded {timeout_seconds}s timeout guard"
-                logger.exception("Account %s browser sender timed out", account_name)
+                logger.exception("账号 %s 发送超时", account_name)
                 for target_name in user.get("targets") or []:
                     # 抢救逻辑（_do_user_task_locked 的 CancelledError 分支）可能已确认
                     # 最后一条消息今日发送成功；已强确认的目标不得再记失败（否则重复发送）。
@@ -2661,7 +2659,7 @@ async def _do_user_task_locked(browser, user, send_strategy, profile_config, fri
         "accountStartDelaySecondsMin",
         "accountStartDelaySecondsMax",
     )
-    await _sleep_with_log(start_delay, "Delaying browser sender start", account_name)
+    await _sleep_with_log(start_delay, "等待账号启动延时", account_name)
 
     owned_playwright = None
     profile_dir = None
@@ -2671,7 +2669,7 @@ async def _do_user_task_locked(browser, user, send_strategy, profile_config, fri
             root=profile_config["root"],
         network_mode=network_mode,
         )
-        logger.info("Opened persistent browser profile for %s at %s", account_name, profile_dir)
+        logger.info("已打开持久化浏览器配置（账号=%s 路径=%s）", account_name, profile_dir)
         if profile_config["syncStoredCookiesBeforeRun"]:
             await apply_stored_cookies_to_profile(context, cookies, account_name)
         elif profile_config["seedCookiesWhenEmpty"]:
@@ -2711,7 +2709,7 @@ async def _do_user_task_locked(browser, user, send_strategy, profile_config, fri
             attempted_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
             category = classify_browser_failure("open_chat_page", exc)
             reason = str(exc)
-            logger.exception("Account %s failed before target delivery", account_name)
+            logger.exception("账号 %s 在目标发送前失败", account_name)
             if _is_account_level_failure_category(category):
                 _persist_account_send_failure(user, category, reason, attempted_at, targets)
             else:
@@ -2719,7 +2717,7 @@ async def _do_user_task_locked(browser, user, send_strategy, profile_config, fri
                     _persist_browser_send_failure(user, target_name, "", category, reason, attempted_at)
             return
 
-        logger.info("Account %s started the message flow", account_name)
+        logger.info("账号 %s 开始发送消息流程", account_name)
         pending_confirmation = None
         try:
             index_targets = targets
@@ -2728,7 +2726,7 @@ async def _do_user_task_locked(browser, user, send_strategy, profile_config, fri
             if not _friend_index_complete_today(user, schedule_now):
                 index_targets = list(user.get("targets") or targets)
                 logger.info(
-                    "Account %s will refresh today's friend index while delivering targetCount=%s",
+                    "账号 %s 本次将同时刷新好友列表索引，目标数=%s",
                     account_name,
                     len(targets),
                 )
@@ -2748,14 +2746,14 @@ async def _do_user_task_locked(browser, user, send_strategy, profile_config, fri
                 try:
                     await save_debug_artifacts(page, account_name, target_name, "selected-friend")
                     chat_input, selector_used = await locate_chat_input(page)
-                    logger.info("Using chat input selector %s for %s/%s", selector_used, account_name, target_name)
+                    logger.info("定位聊天输入框完成（选择器 %s）账号=%s 目标=%s", selector_used, account_name, target_name)
 
                     previous_entry = dict(user.get("message_history") or {}).get(target_name) or {}
                     previous_message = str(previous_entry.get("message") or "")
                     message = build_message(previous_message=previous_message, last_message=last_message)
                     last_message = message
                     logger.info(
-                        "Prepared message for %s/%s length=%s previousMatch=%s",
+                        "已生成消息：账号=%s 目标=%s 长度=%s 与上轮相同=%s",
                         account_name,
                         target_name,
                         len(message),
@@ -2766,10 +2764,10 @@ async def _do_user_task_locked(browser, user, send_strategy, profile_config, fri
                         chat_input=chat_input,
                     )
                     logger.info(
-                        "Last own message before send for %s/%s length=%s",
+                        "发送前会话最后一条消息长度=%s（账号=%s 目标=%s）",
+                        len((last_own_message_before or {}).get("text", "")),
                         account_name,
                         target_name,
-                        len((last_own_message_before or {}).get("text", "")),
                     )
 
                     lines = message.split("\n")
@@ -2781,7 +2779,7 @@ async def _do_user_task_locked(browser, user, send_strategy, profile_config, fri
                     await save_debug_artifacts(page, account_name, target_name, "typed-message")
 
                     im_observer_summary = await start_im_send_observer(page, account_name, target_name)
-                    logger.info("Pressing Enter to send message for %s/%s", account_name, target_name)
+                    logger.info("按 Enter 发送消息：账号=%s 目标=%s", account_name, target_name)
                     await chat_input.press("Enter")
 
                     pending_confirmation = (target_name, message, chat_input, last_own_message_before)
@@ -2821,7 +2819,7 @@ async def _do_user_task_locked(browser, user, send_strategy, profile_config, fri
                     elif not sent_ok:
                         raise RuntimeError(detail)
 
-                    logger.info("Message send confirmed for %s/%s by server receipt: %s", account_name, target_name, detail)
+                    logger.info("消息发送确认成功（账号=%s 目标=%s）：%s", account_name, target_name, detail)
                     _persist_browser_send_success(
                         user,
                         target_name,
@@ -2834,7 +2832,7 @@ async def _do_user_task_locked(browser, user, send_strategy, profile_config, fri
                         "messageIntervalSecondsMin",
                         "messageIntervalSecondsMax",
                     )
-                    await _sleep_with_log(interval, "Delaying next browser message", account_name)
+                    await _sleep_with_log(interval, "等待下一条消息发送", account_name)
                 except Exception as exc:
                     sent_ok = False
                     detail = ""
@@ -2847,7 +2845,7 @@ async def _do_user_task_locked(browser, user, send_strategy, profile_config, fri
                         )
                     if sent_ok and not str(exc).startswith("server send"):
                         logger.warning(
-                            "Recovered send outcome for %s/%s after failure: %s",
+                            "发送过程报错但已确认发出（账号=%s 目标=%s）：%s",
                             account_name,
                             target_name,
                             detail,
@@ -2861,7 +2859,7 @@ async def _do_user_task_locked(browser, user, send_strategy, profile_config, fri
                         )
                         continue
 
-                    logger.exception("Send flow failed for %s/%s", account_name, target_name)
+                    logger.exception("发送流程失败（账号=%s 目标=%s）", account_name, target_name)
                     await save_debug_artifacts(page, account_name, target_name, "send-error")
                     category = classify_browser_failure("send_flow", exc)
                     reason = str(exc)
@@ -2870,7 +2868,7 @@ async def _do_user_task_locked(browser, user, send_strategy, profile_config, fri
                         category = "login_required"
                         reason = f"{reason}\n{login_detail}"
                         logger.warning(
-                            "Account %s hit login_required during send flow: %s",
+                            "账号 %s 在发送过程中需要重新登录：%s",
                             account_name,
                             login_detail,
                         )
@@ -2906,7 +2904,7 @@ async def _do_user_task_locked(browser, user, send_strategy, profile_config, fri
                         "messageIntervalSecondsMin",
                         "messageIntervalSecondsMax",
                     )
-                    await _sleep_with_log(interval, "Delaying next browser message after failure", account_name)
+                    await _sleep_with_log(interval, "发送失败后等待下一条", account_name)
         except asyncio.CancelledError:
             # 超时守卫取消本任务：最后一条消息可能已按 Enter 发出但尚未确认。
             # 用短超时快速抢救检测，确认成功则记录，避免下一轮重复发送。
@@ -2924,7 +2922,7 @@ async def _do_user_task_locked(browser, user, send_strategy, profile_config, fri
                     )
                 except Exception as detect_exc:
                     logger.warning(
-                        "Timeout rescue detection failed for %s/%s: %s",
+                        "超时抢救检测失败（账号=%s 目标=%s）：%s",
                         account_name,
                         target_name,
                         detect_exc,
@@ -2932,7 +2930,7 @@ async def _do_user_task_locked(browser, user, send_strategy, profile_config, fri
                 else:
                     if sent_ok:
                         logger.warning(
-                            "Rescued send outcome for %s/%s after timeout: %s",
+                            "超时后确认消息已发出（账号=%s 目标=%s）：%s",
                             account_name,
                             target_name,
                             detail,
@@ -2957,7 +2955,7 @@ async def _do_user_task_locked(browser, user, send_strategy, profile_config, fri
             if is_login_required:
                 category = "login_required"
                 reason = f"{reason}\n{login_detail}"
-            logger.exception("Target selection failed for %s", account_name)
+            logger.exception("目标好友选择失败（账号=%s）", account_name)
             if _is_account_level_failure_category(category):
                 _persist_account_send_failure(user, category, reason, attempted_at, remaining_targets)
             else:
@@ -3015,24 +3013,24 @@ async def runTasks():
         active_user_data = filtered_users
         logger.info("SPARKFLOW_TARGET_REFS=%s applied", ",".join(sorted(requested_target_refs)))
 
-    logger.info("Starting tasks with config")
-    logger.info("multiTask=%s taskCount=%s", active_config["multiTask"], active_config["taskCount"])
+    logger.info("开始执行发送任务")
+    logger.info("多任务=%s 并发数=%s", active_config["multiTask"], active_config["taskCount"])
     send_strategy = active_config.get("sendStrategy", {}) or {}
     logger.info(
-        "messageConfig templateConfigured=%s variantCount=%s shuffleTargets=%s",
+        "消息配置：模板已配置=%s 变体数=%s 打乱目标=%s",
         bool(str(active_config.get("messageTemplate") or "").strip()),
         len(send_strategy.get("messageVariants") or []),
         bool(send_strategy.get("shuffleTargets", True)),
     )
-    logger.info("hitokotoTypeCount=%s", len(active_config.get("hitokotoTypes") or []))
-    logger.info("enabledUsers=%s disabledUsers=%s", len(active_user_data), len(disabled_user_data))
+    logger.info("一言类型数=%s", len(active_config.get("hitokotoTypes") or []))
+    logger.info("启用账号=%s 停用账号=%s", len(active_user_data), len(disabled_user_data))
     for user in active_user_data:
-        logger.info("user=%s targetCount=%s", user.get("username", "unknown"), len(user["targets"]))
+        logger.info("账号=%s 目标数=%s", user.get("username", "unknown"), len(user["targets"]))
     for user in disabled_user_data:
-        logger.info("skipping disabled user=%s", user.get("username", "unknown"))
+        logger.info("跳过已停用账号=%s", user.get("username", "unknown"))
 
     if not active_user_data:
-        logger.warning("No enabled accounts are available for the task run")
+        logger.warning("没有可用的启用账号，本次任务不执行")
         return
 
     runnable_user_data = _prepare_active_users_for_run(active_config, active_user_data)
@@ -3046,7 +3044,7 @@ async def runTasks():
                 await run_protocol_tasks(active_config, protocol_user_data, build_message)
             await run_browser_tasks(active_config, browser_user_data)
     except TaskRunAlreadyInProgress:
-        logger.warning("Skipping task run because another task run is already in progress")
+        logger.warning("已有发送任务正在运行，本次任务被跳过（避免重复发送）")
 
 
 class TaskRunAlreadyInProgress(RuntimeError):
