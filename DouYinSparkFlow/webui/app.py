@@ -95,7 +95,7 @@ from webui.ops import (
     update_daily_schedule,
 )
 from utils.logger import read_text_autodetect
-from utils.web_middleware import localhost_only_middleware
+from utils.web_middleware import _hostname_allowed, localhost_only_middleware
 
 logger = logging.getLogger(__name__)
 
@@ -308,7 +308,11 @@ def login_desktop_novnc_ws_url() -> str:
 
 
 def fetch_login_desktop_asset(asset_path: str, query: str = ""):
-    safe_path = quote(str(asset_path or "vnc.html").lstrip("/"), safe="/._-")
+    raw_path = str(asset_path or "vnc.html").lstrip("/")
+    # L20：拒绝含 .. 的路径段，防止 /login-desktop/proxy/../foo 归一化后越界访问
+    if ".." in raw_path.split("/"):
+        raise RuntimeError("invalid asset path")
+    safe_path = quote(raw_path, safe="/._-")
     url = f"{login_desktop_novnc_http_url()}/{safe_path}"
     if query:
         url = f"{url}?{query}"
@@ -476,6 +480,27 @@ def create_app():
     async def localhost_guard(request: Request, call_next):
         # 拒绝非本机 Host 头（防 DNS rebinding 跨域读取控制台数据）
         return await localhost_only_middleware(request, call_next)
+
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        # 纵深防御安全头（setdefault 不覆盖已有的 Cache-Control 等头，不破坏既有断言）
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        # SAMEORIGIN：noVNC 页面经同源代理被本页面 iframe 嵌入，不能用 DENY
+        response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; "
+            "connect-src 'self' ws://127.0.0.1:* ws://localhost:*; "
+            "frame-src 'self'; "
+            "font-src 'self' data:; "
+            "object-src 'none'; "
+            "base-uri 'self'",
+        )
+        return response
 
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     DEBUG_ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -1032,11 +1057,23 @@ def create_app():
         settings = get_app_settings(force_reload=True)
         settings["compose_root"] = str(form.get("compose_root", settings.get("compose_root", ""))).strip()
         settings["ops_log_file"] = str(form.get("ops_log_file", settings.get("ops_log_file", ""))).strip()
+        # L19：日志文件路径必须位于应用数据目录的 logs 目录内（防指向任意文件被下载/覆盖）
+        if settings["ops_log_file"]:
+            log_candidate = Path(settings["ops_log_file"]).expanduser().resolve()
+            logs_root = (data_dir() / "logs").resolve()
+            if log_candidate != logs_root and logs_root not in log_candidate.parents:
+                flash(request, "日志文件路径必须在应用数据目录的 logs 目录内。", "error")
+                return redirect("/settings")
         settings["proxy_refresh_script"] = str(form.get("proxy_refresh_script", settings.get("proxy_refresh_script", ""))).strip()
         settings["login_desktop_api_url"] = str(
             form.get("login_desktop_api_url", settings.get("login_desktop_api_url", "http://127.0.0.1:18090"))
         ).strip()
-        settings["ui_port"] = int(form.get("ui_port", settings.get("ui_port", 8787)))
+        # M16：ui_port 非数字不再 500，非法值回退默认并给下限 1
+        settings["ui_port"] = coerce_int(
+            form.get("ui_port", settings.get("ui_port", 8787)),
+            settings.get("ui_port", 8787),
+            1,
+        )
         save_app_settings(settings)
 
         flash(request, "系统设置已保存。", "success")
@@ -1155,7 +1192,9 @@ def create_app():
         if getattr(result, "returncode", 1) == 0:
             flash(request, f"发送窗口已更新为 {time_string}。", "success")
         else:
-            flash(request, f"发送窗口更新失败 {time_string}：{getattr(result, 'stderr', '')}", "error")
+            # L25：stderr 原文截断（Jinja2 转义已防 XSS，但避免把长错误全量回显到页面）
+            stderr = str(getattr(result, "stderr", "") or "")[:200]
+            flash(request, f"发送窗口更新失败 {time_string}：{stderr}", "error")
         return redirect("/ops")
 
     @app.get("/ops/logs", response_class=HTMLResponse)
@@ -1174,6 +1213,12 @@ def create_app():
 
     def _ops_log_content() -> str:
         log_path = Path(get_app_settings().get("ops_log_file") or default_ops_log_path())
+        # L19：读取前校验路径位于 data_dir()/logs/ 下（下载端点无写入限制，读取同样要收紧）
+        resolved = log_path.expanduser().resolve()
+        logs_root = (data_dir() / "logs").resolve()
+        if resolved != logs_root and logs_root not in resolved.parents:
+            logger.warning("Refusing to read ops log outside logs dir: %s", resolved)
+            return ""
         if not log_path.exists():
             return ""
         return read_text_autodetect(log_path)
@@ -1341,6 +1386,19 @@ def create_app():
 
     @app.websocket("/login-desktop/proxy/websockify")
     async def login_desktop_proxy_websocket(websocket: WebSocket):
+        # WebSocket 握手不经过 BaseHTTPMiddleware（localhost_guard 不生效），手工校验：
+        # 1) Host 头必须是本机（防 DNS rebinding：恶意网页解析到 127.0.0.1 后代理 noVNC）
+        # 2) Origin 必须是本机 Web 控制台页面（防其他来源页面发起连接）
+        if not _hostname_allowed(websocket.headers.get("host", "")):
+            await websocket.close(code=4403)
+            return
+        ui_port = int(settings.get("ui_port", 8787))
+        allowed_origins = {f"http://127.0.0.1:{ui_port}", f"http://localhost:{ui_port}"}
+        origin = str(websocket.headers.get("origin", "") or "").rstrip("/")
+        if origin and origin not in allowed_origins:
+            await websocket.close(code=4403)
+            return
+
         current = current_principal(websocket)
         active = get_login_lock()
         if not current:
@@ -1425,11 +1483,17 @@ def create_app():
                         close()
             upstream_status, upstream_headers, content = await asyncio.to_thread(read_qr_response)
             if upstream_status == 202:
-                retry_after = upstream_headers.get("Retry-After", "2")
+                # L26：上游 Retry-After 非数字时回退默认 2，不再 500
+                raw_retry_after = upstream_headers.get("Retry-After", "2")
+                try:
+                    retry_after = int(raw_retry_after or 2)
+                except (TypeError, ValueError):
+                    retry_after = 2
+                    raw_retry_after = "2"
                 return JSONResponse(
-                    {"ok": False, "state": "starting", "retry_after": int(retry_after or 2)},
+                    {"ok": False, "state": "starting", "retry_after": retry_after},
                     status_code=202,
-                    headers={"Retry-After": str(retry_after), "Cache-Control": "no-store"},
+                    headers={"Retry-After": str(raw_retry_after), "Cache-Control": "no-store"},
                 )
             return Response(content=content, media_type="image/png", headers={"Cache-Control": "no-store, max-age=0"})
         except urllib.error.HTTPError as exc:
