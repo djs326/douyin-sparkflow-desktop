@@ -40,6 +40,32 @@
 
 ---
 
+## ✅ 后续阶段更新（2026-08-31）
+
+### 打包版修复（构建验证发现，均经代码审查确认）
+
+| 分支 | 覆盖项 | 合并提交 |
+|---|---|---|
+| `fix/build-node` | build.ps1 node 定位：DSH harness 的 `node.cmd` shim（135B 批处理）被复制成 node.exe → 0 字节无效；改为枚举候选选真实非空 `.exe` + `where.exe` 兜底 | `1022464` |
+| `fix/hide-console` | 打包版（windowed 无控制台）spawn console 子进程弹黑窗；`utils/process.py` 新增 `hidden_startupinfo()`（SW_HIDE），全部 10 处 subprocess 调用点传 startupinfo | `b9d42fc` |
+| `fix/log-encoding` | 日志中文乱码：任务子进程 stdout 写 `douyin-sparkflow.log` 默认 GBK；`decode_bytes_autodetect`（UTF-8→GBK 回退）+ read_log_tail 截断起点回退最近换行（GBK 汉字中间截断 43% 整段乱码）+ launcher `_ensure_utf8_stdio()` 写入端根治 | `fbce450` |
+| `fix/log-i18n` | 发送流程日志中文化（任务启动/选中好友/发送确认/失败入队/账号暂停/手动补发/窗口调度等 30+ 处），技术细节保留英文 | `82215c2` |
+
+### NewUI 接入（用户 2026-08-31 重构 NewUI/ 并明确"这是我想要的新 UI"）
+
+| 分支 | 内容 | 合并提交 |
+|---|---|---|
+| `fix/newui-integration` | 7 个模板 + app.css/app.js 整体替换（主题切换保留）；任务横幅秒级实时化（前端每秒自增 + 假死告警补回）；日志页「清除日志」按钮（`POST /ops/logs/clear`，CSRF + 路径校验 + 截断）；空态恒在 DOM 修复 | `0369f5a` |
+| `fix/newui-followup` | 审查跟进：清除按钮自定义确认文案、`taskBannerTimer` pagehide 清理、删无用 `multiPagePlugins.zip` | `85cbf0d` |
+
+- 兼容性验证：7 页面渲染 200、表单字段新旧完全一致（不丢配置）、契约 data 属性齐全、前端 API 端点全部匹配
+- `multiPagePlugins`（批量注册 OpenAI 账号的 Chrome 扩展）与抖音应用无关，未接入
+
+**测试**：44 → **145 用例全绿**（skipped=2 为 Windows 预期跳过）。
+**发布**：本地 tag `v1.5.0`，完整安装包 `dist\DouYinSparkFlow-Setup-1.5.0.exe`（Inno Setup）。全程未 push / 未操作远程。
+
+---
+
 ## 🔴 Critical
 
 无单点必现的 Critical 级漏洞（锁的 ABA 防护、CSRF 覆盖、token 全覆盖、Host 校验、pid 探测等红线大多守住了）。但以下 **H1、H3、H4 与 M4 的组合** 在本机威胁模型下等价于"本机任意进程 = 登录会话控制 + 本机文件读取"，建议按 Critical 对待并优先处理：
