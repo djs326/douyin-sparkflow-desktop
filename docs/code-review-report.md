@@ -6,6 +6,40 @@
 
 ---
 
+## ✅ 修复状态总览（2026-08-31 更新）
+
+本报告列出的全部问题已修复完毕并合并回本地 `main`（**全程未 push / 未操作远程**），每个分支修复后均经 Agency「代码审查工程师」确认才合并。测试从 44 增至 **131 个用例全绿**（skipped=2 为 Windows 预期跳过）。
+
+| 分支 | 覆盖项 | 合并提交 | 审查轮次 |
+|---|---|---|---|
+| `fix/tasks-locks` | H1、H2 | `df33e86` | 2（含 strip bug 修复） |
+| `fix/stop-retry` | H4、M6、M7、M8、M9、L21 | `7ea1a1a` | 1 |
+| `fix/login-server-security` | H6、M1、M3、M13、M17、L13、L14、L16、L17、L18 | `de5e6e9` | 1 |
+| `fix/webui-safety` | H3、M14、M16、L19、L20、L25、L26 | `1d02fcb` | 1（含 4 条改进跟进） |
+| `fix/protocol-sender` | H5、M2 | `4f33d43` | 2（沙箱方案重做） |
+| `fix/data-layer` | M4、M5、L2、L4、L5、L24 | `c5bcf37` | 1（含 ACL inode 修复） |
+| `fix/tasks-run` | M10、M11、M12、L8-L12、L28、L29 | `7480211` | 1（含 L8 闭环修复） |
+| `fix/misc` | L1、L3、L6、L7、L23、L27、L30 + Nit | `1e01dea` | 1 |
+| `fix/remaining` | M15、L22（最终复查补漏） | `f30433f` | 1 |
+
+**覆盖核对**（最终整体复查确认）：🔴 High H1-H6 **6/6**、🟡 Medium M1-M17 **17/17**、🟢 Low 1-30 **30/30**、⚪ Nit 全部处理。
+
+**修复过程中审查发现并额外修复的问题**（8 处，非原报告内容）：
+1. `_safe_unlink_lock` strip 不一致 → 任务锁删除路径全失效 + 无限忙循环（tasks-locks 二轮）
+2. 单目标重试在 webui 进程内同步跑任务，点"停止任务"会 taskkill 杀死 Web 服务自身（H4）
+3. vm 沙箱仅 codeGeneration 防不住 `Buffer.constructor` 逃逸；sandboxSafe Proxy 方案有 4 条逃逸路径且 `prototype` 拦截破坏真实 SDK 的 `new Blob/new URL/instanceof`（protocol-sender 二轮重做为 sha256 manifest + createContext options 纵深）
+4. `Symbol.for` 写法在 Node 24 上 codeGeneration 不生效（须用 `vm.createContext(ctx, { codeGeneration })`）
+5. ACL 缓存按路径字符串键控，与 `os.replace` 换 inode 冲突 → 第二次写盘起收紧失效（改 `(st_dev, st_ino)` 键控）
+6. L8 仅改发送循环未改调度层查询（`_pending_*`/`_select_due_targets`），全角空格场景引入错位回归（补闭环）
+7. `_persist_friend_index` 内存副本仅带本次增量，与磁盘不一致（契约破坏）
+8. M15（日志读性能）、L22（时区口径）最终复查发现遗漏，`fix/remaining` 补修
+
+**记录在案的有意保留**（非遗漏）：`protocol_sender.mjs` cookie 转义（数据源可信）；`request_workspace` full/queued 分支（单机语义防御）；M7 假活锁阈值 6h 在超大任务下可能误报（可调）。
+
+**后续待办**：打包版需重新构建验证（涉及 PACKED 分支、路径解析、内置 node）；按需推 `vX.Y.Z` tag 发布。
+
+---
+
 ## 🔴 Critical
 
 无单点必现的 Critical 级漏洞（锁的 ABA 防护、CSRF 覆盖、token 全覆盖、Host 校验、pid 探测等红线大多守住了）。但以下 **H1、H3、H4 与 M4 的组合** 在本机威胁模型下等价于"本机任意进程 = 登录会话控制 + 本机文件读取"，建议按 Critical 对待并优先处理：
