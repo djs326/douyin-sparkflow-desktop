@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
@@ -113,12 +114,87 @@ async function readStdinJson() {
   return JSON.parse(raw);
 }
 
+async function sha256Hex(text) {
+  return crypto.createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+// bundle 完整性 manifest：首次下载记录 sha256（trust-on-first-use 基线），
+// 此后每次读取缓存前校验哈希，防本机进程篡改缓存注入恶意 SDK 代码
+const MANIFEST_FILENAME = "manifest.json";
+
+async function loadManifest(cacheDir) {
+  try {
+    return JSON.parse(await fs.promises.readFile(path.join(cacheDir, MANIFEST_FILENAME), "utf8"));
+  } catch (error) {
+    if (error && error.code !== "ENOENT") {
+      // 基线丢失（损坏/被清）：告警并重建，不静默吞掉
+      console.error(`[protocol_sender] failed to read ${MANIFEST_FILENAME}: ${error.message}`);
+    }
+    return {};
+  }
+}
+
+async function saveManifest(cacheDir, manifest) {
+  const manifestPath = path.join(cacheDir, MANIFEST_FILENAME);
+  const tempPath = `${manifestPath}.${process.pid}.${Date.now()}.tmp`;
+  await fs.promises.writeFile(tempPath, JSON.stringify(manifest, null, 2), "utf8");
+  try {
+    await fs.promises.rename(tempPath, manifestPath);
+  } catch (error) {
+    if (!fs.existsSync(manifestPath)) {
+      throw error;
+    }
+    await fs.promises.unlink(tempPath).catch(() => {});
+  }
+}
+
+async function downloadBundle(cacheDir, url) {
+  const filename = url.split("/").at(-1);
+  const filePath = path.join(cacheDir, filename);
+  const response = await fetchWithTimeout(url, {}, 60000);
+  if (!response.ok) {
+    throw new Error(`Failed to download SDK bundle ${url}: ${response.status}`);
+  }
+  const text = await response.text();
+  const hash = await sha256Hex(text);
+  // 原子落盘：先写临时文件再 rename，避免多 Node 进程并发交叉写坏 bundle
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  await fs.promises.writeFile(tempPath, text, "utf8");
+  try {
+    await fs.promises.rename(tempPath, filePath);
+  } catch (error) {
+    if (!fs.existsSync(filePath)) {
+      throw error;
+    }
+    await fs.promises.unlink(tempPath).catch(() => {});
+  }
+  return hash;
+}
+
 async function ensureBundles(cacheDir) {
   await fs.promises.mkdir(cacheDir, { recursive: true });
+  const manifest = await loadManifest(cacheDir);
   for (const url of SDK_BUNDLES) {
     const filename = url.split("/").at(-1);
     const filePath = path.join(cacheDir, filename);
     if (fs.existsSync(filePath)) {
+      // 缓存存在：先做 sha256 完整性校验（防本机篡改）；不匹配则重新下载并更新基线
+      let content;
+      try {
+        content = await fs.promises.readFile(filePath, "utf8");
+      } catch {
+        content = null;
+      }
+      if (content !== null && manifest[filename]) {
+        if ((await sha256Hex(content)) !== manifest[filename]) {
+          console.error(`[protocol_sender] SDK bundle hash mismatch for cached ${filename}, re-downloading`);
+          manifest[filename] = await downloadBundle(cacheDir, url);
+          continue;
+        }
+      } else if (content !== null) {
+        // 旧版本缓存（无 manifest 基线）：一次性建立 TOFU 基线
+        manifest[filename] = await sha256Hex(content);
+      }
       // 仅探测可用性；10s 无响应视为缓存仍可用（避免网络挂起拖死整个任务）
       let cached = true;
       try {
@@ -132,23 +208,10 @@ async function ensureBundles(cacheDir) {
       }
       continue;
     }
-    const response = await fetchWithTimeout(url, {}, 60000);
-    if (!response.ok) {
-      throw new Error(`Failed to download SDK bundle ${url}: ${response.status}`);
-    }
-    const text = await response.text();
-    // 原子落盘：先写临时文件再 rename，避免多 Node 进程并发交叉写坏 bundle
-    const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-    await fs.promises.writeFile(tempPath, text, "utf8");
-    try {
-      await fs.promises.rename(tempPath, filePath);
-    } catch (error) {
-      if (!fs.existsSync(filePath)) {
-        throw error;
-      }
-      await fs.promises.unlink(tempPath).catch(() => {});
-    }
+    manifest[filename] = await downloadBundle(cacheDir, url);
   }
+  // 写回（可能新增/更新的）完整性基线
+  await saveManifest(cacheDir, manifest);
 }
 
 async function fetchWithTimeout(url, options, timeoutMs) {
@@ -299,10 +362,29 @@ function createWebpackRequire(bundleDir, cookieString) {
   context.window = context;
   context.globalThis = context;
 
+  // 沙箱执行（供应链纵深，H5）：
+  // - Node 官方声明 vm 不是安全边界；注入的外层对象（Buffer/fetch 等）存在多条
+  //   实测逃逸路径（如 Buffer.from(x).toString.constructor(...)），任何注入即无法
+  //   彻底防逃逸。代码可信性由 sha256 manifest（加载内容 == 抖音官方 CDN 基线）
+  //   保证——这与浏览器 SRI 语义一致，是本修复的信任根基。
+  // - 纵深项：用 vm.createContext(options) 禁用沙箱 realm 内的字符串代码生成
+  //   （eval/new Function），提高逃逸门槛。注意必须用 options 形式而非
+  //   Symbol.for 属性（后者在 Node 24 上实测不生效）。
+  // - 紧急回退阀：SPARKFLOW_PROTOCOL_ALLOW_CODE_GEN=1 恢复旧行为
+  //   （若 SDK 某 bundle 依赖 eval 导致功能异常时使用）。
+  const allowCodeGen = process.env.SPARKFLOW_PROTOCOL_ALLOW_CODE_GEN === "1";
+  if (allowCodeGen) {
+    console.error("[protocol_sender] SPARKFLOW_PROTOCOL_ALLOW_CODE_GEN=1: sandbox codeGeneration hardening DISABLED");
+  }
+  const contextified = vm.createContext(
+    context,
+    allowCodeGen ? undefined : { codeGeneration: { strings: false, wasm: false } },
+  );
+
   for (const entry of fs.readdirSync(bundleDir).filter((name) => name.endsWith(".js")).sort()) {
     const code = fs.readFileSync(path.join(bundleDir, entry), "utf8");
     try {
-      vm.runInNewContext(code, context, { filename: entry });
+      vm.runInContext(code, contextified, { filename: entry });
     } catch {
       // Some bundles execute browser-only entrypoints after registering modules.
     }
