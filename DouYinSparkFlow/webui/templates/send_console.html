@@ -60,7 +60,9 @@
     <strong>
       <i data-lucide="{% if ops.task_lock.running %}loader-circle{% elif ops.task_lock.stale %}info{% else %}circle-check{% endif %}"></i>
       <span data-task-text>
-        {% if ops.task_lock.running %}
+        {% if ops.task_lock.suspicious %}
+        发送任务疑似假死：已运行超过 6 小时（pid {{ ops.task_lock.pid }}）。请确认是否正常，必要时点击"停止任务"
+        {% elif ops.task_lock.running %}
         发送任务运行中，已运行约 {{ ops.task_lock.ageSeconds }} 秒
         {% elif ops.task_lock.stale %}
         检测到过期任务锁，下次启动任务时会自动清理

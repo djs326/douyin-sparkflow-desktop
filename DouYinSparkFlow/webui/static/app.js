@@ -182,9 +182,16 @@
       // 仅在任务运行时显示；平时隐藏，减少页面噪音
       banner.hidden = !task.running;
       if (!task.running) return;
-      banner.className = "status-banner warning";
-      banner.querySelector("[data-task-text]").textContent =
-        `发送任务运行中，已运行约 ${task.ageSeconds || 0} 秒`;
+      if (task.suspicious) {
+        // 假活锁告警：pid 存活但锁龄超上限（任务崩溃后 PID 被复用 / 子进程挂起）
+        banner.className = "status-banner danger";
+        banner.querySelector("[data-task-text]").textContent =
+          `发送任务疑似假死：已运行超过 6 小时（pid ${task.pid || "?"}）。请确认是否正常，必要时点击"停止任务"`;
+      } else {
+        banner.className = "status-banner warning";
+        banner.querySelector("[data-task-text]").textContent =
+          `发送任务运行中，已运行约 ${task.ageSeconds || 0} 秒`;
+      }
     });
   };
 
