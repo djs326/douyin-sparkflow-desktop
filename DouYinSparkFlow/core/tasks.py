@@ -2270,7 +2270,7 @@ def _safe_unlink_lock(lock_path, expected_raw):
         current = lock_path.read_text(encoding="utf-8", errors="ignore")
     except OSError:
         return False
-    if current != expected_raw:
+    if current.strip() != str(expected_raw or "").strip():
         return False
     try:
         lock_path.unlink()
@@ -2337,7 +2337,11 @@ async def _acquire_browser_account_lock(user, account_name):
                 # 删除前重读校验内容未变（TOCTOU：避免删掉并发进程刚重建的新锁）
                 if _safe_unlink_lock(lock_path, raw):
                     continue
-                # 内容已变化：他人已重建锁，回到循环头部按新内容重新判定
+                # 删除失败（内容已变/OSError）：不忙循环，落入等待路径重新判定
+                now = asyncio.get_running_loop().time()
+                if now - started_at > LOCK_OWNER_MAX_AGE_SECONDS:
+                    raise RuntimeError(f"timed out waiting for browser account lock for {account_name}")
+                await asyncio.sleep(5)
                 continue
 
             now = asyncio.get_running_loop().time()
@@ -2923,12 +2927,11 @@ def task_run_lock():
             except (TypeError, ValueError):
                 stale_pid = None
 
+            removed = False
             if stale_pid is not None and not _lock_owner_is_alive(stale_pid):
                 logger.warning("Removing stale task lock owned by missing pid=%s", stale_pid)
-                _safe_unlink_lock(lock_path, raw_pid)
-                continue
-
-            if stale_pid is None:
+                removed = _safe_unlink_lock(lock_path, raw_pid)
+            elif stale_pid is None:
                 # 内容不可解析（含空文件）：创建锁与写入 PID 之间只有毫秒级窗口，
                 # 只有超过短年龄阈值才可能是残留；刚创建未写入的锁绝不删除，
                 # 否则会与并发进程形成"删除-重抢"竞态导致双任务同时运行、重复发送。
@@ -2939,10 +2942,14 @@ def task_run_lock():
                         age_seconds,
                         raw_pid,
                     )
-                    _safe_unlink_lock(lock_path, raw_pid)
-                    continue
-                # 短龄不可解析锁：视为正在创建中，不删除，转入等待
+                    removed = _safe_unlink_lock(lock_path, raw_pid)
+                # 短龄不可解析锁：视为正在创建中，不删除
 
+            if removed:
+                continue
+
+            # 删除失败（内容已变/OSError）或锁仍有效：落入等待路径，
+            # 带超时与 sleep，避免"持续删不掉"演变为无 sleep 的无限忙循环
             if time.monotonic() - started_at > TASK_LOCK_WAIT_TIMEOUT_SECONDS:
                 raise TaskRunAlreadyInProgress(
                     f"another task run has been in progress for over 30 minutes (pid={stale_pid})"
