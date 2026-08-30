@@ -534,12 +534,18 @@ def read_log_tail(lines=200):
             read_size = min(size, 64 * 1024)
             handle.seek(size - read_size)
             tail_bytes = handle.read(read_size)
+        if read_size < size:
+            # 截断起点回退到最近 \n 之后：\n（0x0A）在 GBK/UTF-8 中都只作为
+            # 独立 ASCII 出现，绝不可能是多字节字符的一部分；若起点落在
+            # GBK 汉字中间，整段字节对错位会导致 43% 概率整段解码乱码
+            newline = tail_bytes.find(b"\n")
+            if newline != -1:
+                tail_bytes = tail_bytes[newline + 1 :]
         # 编码探测：douyin-sparkflow.log 由任务子进程 stdout 重定向写入，
-        # 可能是 GBK（旧/部分环境）或 UTF-8——硬编码 UTF-8 会把 GBK 中文解成乱码
+        # 可能是 GBK（旧/部分环境）或 UTF-8——硬编码 UTF-8 会把 GBK 中文解成乱码。
+        # 注意：本文件可能为混合编码（[WEB_TRIGGER] 头行 UTF-8 + 子进程正文 GBK），
+        # 整段探测只能选一个编码，极端混合时头部中文可能乱码（命令参数通常为 ASCII）。
         tail_text = decode_bytes_autodetect(tail_bytes)
-        if read_size < size and "\n" in tail_text:
-            # 截断起点可能落在行中间：丢弃首行
-            tail_text = tail_text.split("\n", 1)[1]
         content = tail_text
     except OSError:
         # 读取失败（文件被占用等）回退全量读

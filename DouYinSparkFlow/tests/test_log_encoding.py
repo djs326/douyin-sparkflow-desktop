@@ -62,6 +62,20 @@ class ReadLogTailEncodingTests(unittest.TestCase):
                 text = ops.read_log_tail(50)
             self.assertIn("测试号", text)
 
+    def test_large_gbk_log_truncation_does_not_mangle(self):
+        # >64KB 的 GBK 日志：截断起点可能落在汉字中间（43% 概率整段错位乱码），
+        # 修复后必须回退到最近换行，整段无替换符
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "douyin-sparkflow.log"
+            line = "账号：吃饺子不吃饺子 目标：压力测试目标 状态：已发送确认成功\n"
+            lines = line * 2000  # 约 160KB，远超 64KB 截断窗口
+            log_path.write_bytes(lines.encode("gbk"))
+            with patch.object(ops, "get_app_settings", return_value={"ops_log_file": str(log_path)}):
+                text = ops.read_log_tail(200)
+            self.assertIn("吃饺子不吃饺子", text)
+            self.assertNotIn("\ufffd", text)
+            self.assertLessEqual(len(text.splitlines()), 201)
+
 
 if __name__ == "__main__":
     unittest.main()
