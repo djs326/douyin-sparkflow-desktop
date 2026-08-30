@@ -47,6 +47,24 @@ def _ensure_stdio():
     for name in ("stdout", "stderr"):
         if getattr(sys, name) is None:
             setattr(sys, name, open(os.devnull, "w", encoding="utf-8", errors="replace"))
+    _ensure_utf8_stdio()
+
+
+def _ensure_utf8_stdio():
+    """强制 stdout/stderr 以 UTF-8 输出。
+
+    打包版任务子进程（``exe main.py --doTask``）的 stdout/stderr 被
+    run_background_command 重定向到 douyin-sparkflow.log；PyInstaller windowed
+    下 PYTHONIOENCODING 对重定向流的编码不可靠（实测仍是 GBK），
+    直接 reconfigure 兜底，保证写入日志的中文为 UTF-8（与 app.log 一致）。
+    """
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is not None and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:  # noqa: BLE001 - 尽力而为，失败不影响功能
+                pass
 
 
 def _setup_logging():

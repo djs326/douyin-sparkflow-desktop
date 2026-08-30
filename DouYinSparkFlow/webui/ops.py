@@ -25,7 +25,7 @@ from utils.config import (
     repo_root,
     save_config,
 )
-from utils.logger import read_text_autodetect
+from utils.logger import decode_bytes_autodetect, read_text_autodetect
 from utils.process import hidden_startupinfo, pid_is_alive
 
 logger = logging.getLogger(__name__)
@@ -534,7 +534,9 @@ def read_log_tail(lines=200):
             read_size = min(size, 64 * 1024)
             handle.seek(size - read_size)
             tail_bytes = handle.read(read_size)
-        tail_text = tail_bytes.decode("utf-8", errors="replace")
+        # 编码探测：douyin-sparkflow.log 由任务子进程 stdout 重定向写入，
+        # 可能是 GBK（旧/部分环境）或 UTF-8——硬编码 UTF-8 会把 GBK 中文解成乱码
+        tail_text = decode_bytes_autodetect(tail_bytes)
         if read_size < size and "\n" in tail_text:
             # 截断起点可能落在行中间：丢弃首行
             tail_text = tail_text.split("\n", 1)[1]
