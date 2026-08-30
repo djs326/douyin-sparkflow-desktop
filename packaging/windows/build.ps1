@@ -82,11 +82,16 @@ foreach ($candidate in (Get-Command node -ErrorAction SilentlyContinue -All | Se
     if ($candidate -match '\.exe$') {
         try {
             if ((Get-Item -LiteralPath $candidate).Length -gt 0) { $NodeExe = $candidate; break }
-        } catch { }
+        } catch {
+            # Candidate may vanish between enumeration and stat; keep scanning.
+        }
     }
 }
 if (-not $NodeExe) {
-    $NodeExe = ((where.exe node 2>$null) | Where-Object { $_ -match '\.exe$' } | Select-Object -First 1)
+    # Fallback: enumerate via where.exe, keep only non-empty real .exe files.
+    $NodeExe = ((where.exe node 2>$null) | Where-Object {
+        $_ -match '\.exe$' -and (Test-Path -LiteralPath $_) -and (Get-Item -LiteralPath $_).Length -gt 0
+    } | Select-Object -First 1)
 }
 if (-not $NodeExe) { throw "Node.js 18+ not found in PATH (needed for the protocol sender)" }
 Write-Host "Using node: $NodeExe"
