@@ -356,7 +356,7 @@ async def apply_stored_cookies_to_profile(context, cookies, account_name, only_w
             return
 
     await context.add_cookies(cookies)
-    logger.info("Applied %s stored cookies to persistent profile for %s", len(cookies), account_name)
+    logger.info("已应用 %s 条存储的 Cookies（账号=%s）", len(cookies), account_name)
 
 
 async def refresh_stored_cookies_from_profile(context, user, account_name):
@@ -2623,7 +2623,7 @@ async def do_user_task(browser, user, semaphore, send_strategy, profile_config, 
             except asyncio.TimeoutError:
                 attempted_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
                 reason = f"browser sender exceeded {timeout_seconds}s timeout guard"
-                logger.exception("Account %s browser sender timed out", account_name)
+                logger.exception("账号 %s 发送超时", account_name)
                 for target_name in user.get("targets") or []:
                     # 抢救逻辑（_do_user_task_locked 的 CancelledError 分支）可能已确认
                     # 最后一条消息今日发送成功；已强确认的目标不得再记失败（否则重复发送）。
@@ -2659,7 +2659,7 @@ async def _do_user_task_locked(browser, user, send_strategy, profile_config, fri
         "accountStartDelaySecondsMin",
         "accountStartDelaySecondsMax",
     )
-    await _sleep_with_log(start_delay, "Delaying browser sender start", account_name)
+    await _sleep_with_log(start_delay, "等待账号启动延时", account_name)
 
     owned_playwright = None
     profile_dir = None
@@ -2709,7 +2709,7 @@ async def _do_user_task_locked(browser, user, send_strategy, profile_config, fri
             attempted_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
             category = classify_browser_failure("open_chat_page", exc)
             reason = str(exc)
-            logger.exception("Account %s failed before target delivery", account_name)
+            logger.exception("账号 %s 在目标发送前失败", account_name)
             if _is_account_level_failure_category(category):
                 _persist_account_send_failure(user, category, reason, attempted_at, targets)
             else:
@@ -2955,7 +2955,7 @@ async def _do_user_task_locked(browser, user, send_strategy, profile_config, fri
             if is_login_required:
                 category = "login_required"
                 reason = f"{reason}\n{login_detail}"
-            logger.exception("Target selection failed for %s", account_name)
+            logger.exception("目标好友选择失败（账号=%s）", account_name)
             if _is_account_level_failure_category(category):
                 _persist_account_send_failure(user, category, reason, attempted_at, remaining_targets)
             else:
