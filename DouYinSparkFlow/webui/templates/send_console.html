@@ -329,7 +329,12 @@
       </div>
     </details>
     {% else %}
-    <div class="empty-state">当前没有启用账号。</div>
+    <div class="empty-state">
+      <span class="empty-state-icon"><i data-lucide="users"></i></span>
+      <strong class="empty-state-title">当前没有启用账号</strong>
+      <p class="empty-state-copy">先在账号管理中启用至少一个账号，这里会展示每个账号的发送明细。</p>
+      <a class="empty-state-action" href="/accounts"><i data-lucide="user-plus"></i><span>前往账号管理</span></a>
+    </div>
     {% endfor %}
   </div>
 </div>

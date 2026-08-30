@@ -177,22 +177,62 @@
     });
   };
 
-  const updateTaskBanner = (task) => {
+  // 任务横幅秒数：后端轮询只校准基准，前端每秒自增（实时显示，不等 10s 轮询）。
+  // 状态放模块级变量，interval 每 tick 读取最新值（避免闭包持有旧基准导致校准失效）。
+  let taskBannerTimer = null;
+  let taskBannerBaseSeconds = 0;
+  let taskBannerBaseTime = 0;
+  let taskBannerSuspicious = false;
+  let taskBannerPid = "";
+
+  const formatRunSeconds = (seconds) => {
+    const s = Math.max(0, Math.floor(seconds));
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    if (h > 0) return `${h} 小时 ${m} 分`;
+    if (m > 0) return `${m} 分 ${sec} 秒`;
+    return `${sec} 秒`;
+  };
+
+  const renderTaskBanner = () => {
+    const seconds = taskBannerBaseSeconds + Math.floor((Date.now() - taskBannerBaseTime) / 1000);
     document.querySelectorAll("[data-task-banner]").forEach((banner) => {
-      // 仅在任务运行时显示；平时隐藏，减少页面噪音
-      banner.hidden = !task.running;
-      if (!task.running) return;
-      if (task.suspicious) {
+      banner.hidden = false;
+      if (taskBannerSuspicious) {
         // 假活锁告警：pid 存活但锁龄超上限（任务崩溃后 PID 被复用 / 子进程挂起）
         banner.className = "status-banner danger";
         banner.querySelector("[data-task-text]").textContent =
-          `发送任务疑似假死：已运行超过 6 小时（pid ${task.pid || "?"}）。请确认是否正常，必要时点击"停止任务"`;
+          `发送任务疑似假死：已运行超过 6 小时（pid ${taskBannerPid || "?"}）。请确认是否正常，必要时点击"停止任务"`;
       } else {
         banner.className = "status-banner warning";
         banner.querySelector("[data-task-text]").textContent =
-          `发送任务运行中，已运行约 ${task.ageSeconds || 0} 秒`;
+          `发送任务运行中，已运行约 ${formatRunSeconds(seconds)}`;
       }
     });
+  };
+
+  const updateTaskBanner = (task) => {
+    if (!task.running) {
+      // 任务结束：停止计时器并隐藏横幅
+      if (taskBannerTimer) {
+        window.clearInterval(taskBannerTimer);
+        taskBannerTimer = null;
+      }
+      document.querySelectorAll("[data-task-banner]").forEach((banner) => {
+        banner.hidden = true;
+      });
+      return;
+    }
+    // 用后端 ageSeconds 校准基准，之后前端每秒自增
+    taskBannerBaseSeconds = task.ageSeconds || 0;
+    taskBannerBaseTime = Date.now();
+    taskBannerSuspicious = Boolean(task.suspicious);
+    taskBannerPid = task.pid || "";
+    renderTaskBanner();
+    if (!taskBannerTimer) {
+      taskBannerTimer = window.setInterval(renderTaskBanner, 1000);
+    }
   };
 
   const updateAccounts = (accounts) => {
@@ -356,6 +396,7 @@
   const qrStatus = document.querySelector("[data-login-qr-status]");
   let timer = null;
   let heartbeatTimer = null;
+  let countdownTimer = null;
   let qrRefreshTimer = null;
   let workspace = { state: "closed", active: false, position: 0, ticket: "" };
   if (displayMode === "native" && copyLoginUrlButton) copyLoginUrlButton.hidden = true;
@@ -657,11 +698,10 @@
   timer = window.setInterval(pollStatus, 5000);
   heartbeatTimer = window.setInterval(heartbeat, 5000);
   // 工作区由心跳自动续期，无需本地倒计时
+  countdownTimer = null;
   window.addEventListener("pagehide", () => {
     window.clearInterval(timer);
     window.clearInterval(heartbeatTimer);
-    // Nit：qrRefreshTimer 是 setTimeout，pagehide 时一并清理，避免页面切换后残留重试
-    window.clearTimeout(qrRefreshTimer);
   });
 })();
 
@@ -794,29 +834,17 @@
     }
   };
 
-  // Nit：tag.path 来自 sessionStorage，仅允许同源站内路径——
-  // startsWith("/") 会被 "//evil.com"（协议相对）或 "/\evil.com"（反斜杠当正斜杠）绕过
-  const isSafeTagPath = (value) => {
-    try {
-      const url = new URL(String(value || ""), window.location.origin);
-      return url.origin === window.location.origin;
-    } catch {
-      return false;
-    }
-  };
-
   const render = () => {
     const tags = readTags();
     const currentPath = window.location.pathname;
     scroll.innerHTML = "";
     tags.forEach((tag) => {
-      const tagPath = isSafeTagPath(tag.path) ? tag.path : HOME_PATH;
       const chip = document.createElement("span");
-      chip.className = `tag-chip${tagPath === currentPath ? " active" : ""}`;
+      chip.className = `tag-chip${tag.path === currentPath ? " active" : ""}`;
       const label = document.createElement("span");
       label.textContent = tag.title;
       chip.append(label);
-      if (tagPath !== HOME_PATH) {
+      if (tag.path !== HOME_PATH) {
         const close = document.createElement("span");
         close.className = "tag-close";
         close.setAttribute("role", "button");
@@ -824,18 +852,18 @@
         close.textContent = "✕";
         close.addEventListener("click", (event) => {
           event.stopPropagation();
-          const remaining = readTags().filter((item) => isSafeTagPath(item.path) && item.path !== tagPath);
+          const remaining = readTags().filter((item) => item.path !== tag.path);
           writeTags(remaining);
           render();
-          if (tagPath === currentPath) {
+          if (tag.path === currentPath) {
             const fallback = remaining[remaining.length - 1] || { path: HOME_PATH };
-            window.location.href = isSafeTagPath(fallback.path) ? fallback.path : HOME_PATH;
+            window.location.href = fallback.path;
           }
         });
         chip.append(close);
       }
       chip.addEventListener("click", () => {
-        if (tagPath !== currentPath) window.location.href = tagPath;
+        if (tag.path !== currentPath) window.location.href = tag.path;
       });
       scroll.append(chip);
     });

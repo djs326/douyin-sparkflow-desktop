@@ -27,6 +27,18 @@
       </label>
       <button type="button" class="button button-quiet" id="logs-refresh-btn">↻ 刷新</button>
       <button type="button" class="button button-primary" id="logs-download-btn">⬇ 下载日志</button>
+      <button
+        type="button"
+        class="button button-danger"
+        id="logs-clear-btn"
+        data-confirm
+        data-confirm-title="清除运行日志"
+        data-confirm="将清空当前运行日志（不影响正在进行的任务）。确认继续吗？"
+        data-confirm-accept="确认清除"
+      >
+        <i data-lucide="trash-2"></i><span>清除日志</span>
+      </button>
+      <input type="hidden" id="logs-csrf" value="{{ csrf_token }}">
     </div>
   </div>
 
@@ -78,11 +90,17 @@
 
     const refresh = async () => {
       try {
-        // M15：轮询改 JSON 接口（原实现每 5s 拉整页 HTML + DOMParser）
-        const res = await fetch("/ops/logs/tail", { credentials: "same-origin" });
+        const res = await fetch("/ops/logs", { credentials: "same-origin", headers: { "Accept": "text/html" } });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        renderBody(data.text || "");
+        const html = await res.text();
+        const doc = new DOMParser().parseFromString(html, "text/html");
+        const fetched = doc.getElementById("logs-code");
+        const fetchedEmpty = doc.getElementById("logs-empty");
+        if (fetched) {
+          renderBody(fetched.textContent);
+        } else if (fetchedEmpty) {
+          renderBody("");
+        }
         if (statusEl) statusEl.textContent = fmtTime();
       } catch (err) {
         if (statusEl) statusEl.textContent = `刷新失败：${err.message}`;
@@ -148,6 +166,26 @@
         } catch (err) {
           downloadBtn.textContent = "保存失败";
           setTimeout(() => { downloadBtn.textContent = original; }, 3000);
+        }
+      });
+    }
+
+    // 清除日志：data-confirm 确认后（capture 放行）执行 POST /ops/logs/clear
+    const clearBtn = document.getElementById("logs-clear-btn");
+    if (clearBtn) {
+      clearBtn.addEventListener("click", async () => {
+        const csrfNode = document.getElementById("logs-csrf");
+        try {
+          const body = new FormData();
+          body.set("csrf_token", csrfNode ? csrfNode.value : "");
+          const res = await fetch("/ops/logs/clear", { method: "POST", body, credentials: "same-origin" });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
+          renderBody("");
+          if (statusEl) statusEl.textContent = "已清除日志";
+          if (lineEl) lineEl.textContent = "0 行";
+        } catch (err) {
+          if (statusEl) statusEl.textContent = `清除失败：${err.message}`;
         }
       });
     }

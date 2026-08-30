@@ -7,7 +7,7 @@
 
 {% block topbar_actions %}
 {% set top_summary = ops.send_console.summary %}
-<a class="button button-quiet" href="/ops/send-console">
+<a class="button-text" href="/ops/send-console">
   <i data-lucide="send"></i><span>发送控制台</span>
 </a>
 <form
@@ -216,7 +216,12 @@
         <i data-lucide="chevron-right"></i>
       </a>
       {% else %}
-      <div class="empty-state">当前没有启用账号。</div>
+      <div class="empty-state">
+        <span class="empty-state-icon"><i data-lucide="users"></i></span>
+        <strong class="empty-state-title">当前没有启用账号</strong>
+        <p class="empty-state-copy">在账号管理中扫码登录抖音账号，即可开始自动维护火花。</p>
+        <a class="empty-state-action" href="/accounts"><i data-lucide="user-plus"></i><span>前往账号管理</span></a>
+      </div>
       {% endfor %}
     </div>
   </section>
