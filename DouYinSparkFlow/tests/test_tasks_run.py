@@ -2,6 +2,7 @@
 
 import os
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from core import tasks
@@ -31,6 +32,11 @@ class NormalizeSendWindowTests(unittest.TestCase):
         self.assertEqual(20, window["endHour"])
         self.assertEqual(15, window["scheduleIntervalMinutes"])
 
+    def test_negative_start_hour_disables_window(self):
+        # 显式负值保持"禁用窗口"语义，不被 clamp 成 0 点开始发
+        window = tasks._normalize_send_window({"dailySendWindow": {"enabled": True, "startHour": -5, "endHour": 18}})
+        self.assertFalse(window["enabled"])
+
 
 class NormalizedTargetMapTests(unittest.TestCase):
     """L8：target 映射值统一规范化，发送/写入/查询口径一致。"""
@@ -43,6 +49,59 @@ class NormalizedTargetMapTests(unittest.TestCase):
     def test_fullwidth_space_target_is_normalized(self):
         mapping = tasks._build_normalized_target_map(["　王五　"])
         self.assertIn("王五", mapping)
+
+
+class SchedulerNormalizationClosureTests(unittest.TestCase):
+    """L8 闭环：调度层查询（已发送判定/补发）与 history key 同走规范化名。
+
+    targets 原始串含空白/全角空格时，已发送目标不得被判未发送而重复重发。
+    """
+
+    def setUp(self):
+        self.now = datetime(2026, 7, 10, 14, 0, tzinfo=timezone.utc)
+        self.window = {
+            "enabled": True,
+            "startHour": 10,
+            "endHour": 18,
+            "scheduleIntervalMinutes": 20,
+        }
+
+    def _user_with_strong_history(self, raw_target, history_key):
+        return {
+            "username": "demo",
+            "unique_id": "demo",
+            "targets": [raw_target],
+            "message_history": {
+                history_key: {
+                    "sentAt": self.now.isoformat(),
+                    "status": "confirmed",
+                    "confirmationLevel": "strong",
+                    "needsVerification": False,
+                }
+            },
+        }
+
+    def test_pending_unsent_matches_normalized_history_key(self):
+        # 原始 targets 含首尾空白，history key 为规范化名：不得重复补发
+        user = self._user_with_strong_history("  张三  ", "张三")
+        retry_targets, _ = tasks._pending_unsent_targets(user, self.now)
+        self.assertEqual([], retry_targets)
+
+    def test_pending_failed_matches_normalized_history_key(self):
+        # 全角空格场景：main 分支此处会 miss 并重复重发（L8 引入的回归修复）
+        user = self._user_with_strong_history("\u3000王五\u3000", "王五")
+        self.assertEqual([], tasks._pending_failed_targets(user, self.now))
+
+    def test_select_due_targets_treats_normalized_history_as_sent(self):
+        user = self._user_with_strong_history("  张三  ", "张三")
+        due, already_sent, _, _ = tasks._select_due_targets(user, self.window, self.now)
+        self.assertEqual([], due)
+        self.assertEqual(["张三"], already_sent)
+
+    def test_clean_targets_are_unaffected(self):
+        user = self._user_with_strong_history("target", "target")
+        retry_targets, _ = tasks._pending_unsent_targets(user, self.now)
+        self.assertEqual([], retry_targets)
 
 
 class ConfirmDeadlineTests(unittest.TestCase):

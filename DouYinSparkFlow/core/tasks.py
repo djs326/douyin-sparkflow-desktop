@@ -1642,8 +1642,10 @@ def _schedule_timezone():
 def _normalize_send_window(config):
     raw = config.get("dailySendWindow", {}) or {}
     # M11：config.json 中 null/非数字不再崩溃，非法值走默认并告警
-    start_hour = _coerce_non_negative_int(raw.get("startHour"), 10)
-    end_hour = _coerce_non_negative_int(raw.get("endHour"), 18)
+    raw_start = raw.get("startHour")
+    raw_end = raw.get("endHour")
+    start_hour = _coerce_non_negative_int(raw_start, 10)
+    end_hour = _coerce_non_negative_int(raw_end, 18)
     interval = _coerce_positive_int(raw.get("scheduleIntervalMinutes"), 10)
     normalized = {
         "enabled": bool(raw.get("enabled", False)),
@@ -1651,6 +1653,11 @@ def _normalize_send_window(config):
         "endHour": end_hour,
         "scheduleIntervalMinutes": interval,
     }
+    # clamp 前校验原始值：显式负值（如 -5）保持"禁用窗口"语义，不被 clamp 成 0 点开始发
+    if isinstance(raw_start, (int, float)) and raw_start < 0:
+        normalized["enabled"] = False
+    if isinstance(raw_end, (int, float)) and raw_end < 0:
+        normalized["enabled"] = False
     if normalized["startHour"] < 0 or normalized["startHour"] > 23:
         normalized["enabled"] = False
     if normalized["endHour"] < 1 or normalized["endHour"] > 24:
@@ -1824,19 +1831,33 @@ def _target_has_non_retryable_failure_today(user, target_name, now):
     }
 
 
+def _normalized_target_set(user):
+    """user 的 targets 规范化名集合（L8：调度层查询统一规范化口径）。"""
+    return {
+        _normalize_target_name(target)
+        for target in (user.get("targets") or [])
+        if _normalize_target_name(target)
+    }
+
+
 def _pending_failed_targets(user, now):
     queue = dict(user.get("failure_queue") or {})
     targets = []
+    raw_target_set = _normalized_target_set(user)
     account_failure = _account_failure_entry_today(user, now)
     account_failure_targets = list(account_failure.get("affectedTargets") or [])
     if account_failure_targets:
-        for target_name in account_failure_targets:
-            if target_name in (user.get("targets") or []) and not _target_sent_today(user, target_name, now):
+        for raw_target in account_failure_targets:
+            target_name = _normalize_target_name(raw_target)
+            if target_name and target_name in raw_target_set and not _target_sent_today(user, target_name, now):
                 targets.append(target_name)
         if targets:
             return targets
 
-    for target_name in user.get("targets") or []:
+    for raw_target in user.get("targets") or []:
+        target_name = _normalize_target_name(raw_target)
+        if not target_name:
+            continue
         if _target_sent_today(user, target_name, now):
             continue
         if _target_unconfirmed_today(user, target_name, now):
@@ -1851,7 +1872,10 @@ def _pending_unsent_targets(user, now):
     retry_targets = []
     skipped_targets = []
     max_attempts = _unsent_retry_max_attempts()
-    for target_name in user.get("targets") or []:
+    for raw_target in user.get("targets") or []:
+        target_name = _normalize_target_name(raw_target)
+        if not target_name:
+            continue
         if _target_sent_today(user, target_name, now):
             continue
         if _target_has_non_retryable_failure_today(user, target_name, now):
@@ -1880,9 +1904,9 @@ def _scheduled_send_time(user, target_name, send_window, now):
 
 
 def _select_due_targets(user, send_window, now):
-    targets = list(user.get("targets") or [])
+    raw_targets = list(user.get("targets") or [])
     if not send_window.get("enabled") or _is_manual_run():
-        return targets, [], [], []
+        return raw_targets, [], [], []
 
     window_start = now.replace(
         hour=send_window["startHour"],
@@ -1901,7 +1925,11 @@ def _select_due_targets(user, send_window, now):
         already_sent = []
         pending_targets = []
         queued_failures = []
-        for target_name in targets:
+        for raw_target in raw_targets:
+            # L8：查询统一走规范化名（history key 为规范化名）
+            target_name = _normalize_target_name(raw_target)
+            if not target_name:
+                continue
             if _target_sent_today(user, target_name, now):
                 already_sent.append(target_name)
                 continue
@@ -1916,7 +1944,11 @@ def _select_due_targets(user, send_window, now):
     pending_targets = []
     queued_failures = []
     account_paused = _account_paused_by_failure_today(user, now)
-    for target_name in targets:
+    for raw_target in raw_targets:
+        # L8：查询统一走规范化名（history key 为规范化名）
+        target_name = _normalize_target_name(raw_target)
+        if not target_name:
+            continue
         if _target_sent_today(user, target_name, now):
             already_sent.append(target_name)
             continue
@@ -1949,7 +1981,11 @@ def _prepare_active_users_for_run(active_config, active_user_data):
         runnable_users = []
         for user in active_user_data:
             retry_targets = _pending_failed_targets(user, now)
-            already_sent = [target for target in user.get("targets") or [] if _target_sent_today(user, target, now)]
+            already_sent = [
+                norm
+                for target in user.get("targets") or []
+                if (norm := _normalize_target_name(target)) and _target_sent_today(user, norm, now)
+            ]
             logger.info(
                 "manual-retry user=%s retryTargetCount=%s strongConfirmedToday=%s",
                 user.get("username", "unknown"),
@@ -1971,7 +2007,11 @@ def _prepare_active_users_for_run(active_config, active_user_data):
         runnable_users = []
         for user in active_user_data:
             retry_targets, skipped_targets = _pending_unsent_targets(user, now)
-            already_sent = [target for target in user.get("targets") or [] if _target_sent_today(user, target, now)]
+            already_sent = [
+                norm
+                for target in user.get("targets") or []
+                if (norm := _normalize_target_name(target)) and _target_sent_today(user, norm, now)
+            ]
             logger.info(
                 "manual-unsent user=%s retryTargetCount=%s strongConfirmedToday=%s skippedCount=%s",
                 user.get("username", "unknown"),
@@ -2521,9 +2561,12 @@ async def run_browser_tasks(active_config, browser_user_data):
         await _gather_account_tasks(tasks, browser_user_data)
     finally:
         # M10：先关闭浏览器再停 driver（playwright.stop 断开 driver 后
-        # browser.close 会抛异常并覆盖主流程结果；与 browser.py 顺序一致）
-        await browser.close()
-        await playwright.stop()
+        # browser.close 会抛异常并覆盖主流程结果；与 browser.py 顺序一致）。
+        # 嵌套 finally 保证 browser.close 异常时 playwright.stop 仍执行（driver 不残留）
+        try:
+            await browser.close()
+        finally:
+            await playwright.stop()
 
 
 async def _gather_account_tasks(tasks, users):
@@ -2834,7 +2877,11 @@ async def _do_user_task_locked(browser, user, send_strategy, profile_config, fri
                     if _is_stop_account_category(category):
                         affected_targets = [
                             target_name,
-                            *[target for target in targets if target not in yielded_targets],
+                            *[
+                                norm
+                                for target in targets
+                                if (norm := _normalize_target_name(target)) and norm not in yielded_targets
+                            ],
                         ]
                         attempted_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
                         _persist_account_send_failure(
@@ -2898,7 +2945,11 @@ async def _do_user_task_locked(browser, user, send_strategy, profile_config, fri
                         )
             raise
         except Exception as exc:
-            remaining_targets = [target for target in targets if target not in yielded_targets]
+            remaining_targets = [
+                norm
+                for target in targets
+                if (norm := _normalize_target_name(target)) and norm not in yielded_targets
+            ]
             attempted_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
             category = classify_browser_failure("friend_list", exc)
             reason = str(exc)
@@ -2914,7 +2965,11 @@ async def _do_user_task_locked(browser, user, send_strategy, profile_config, fri
                     _persist_browser_send_failure(user, target_name, "", category, reason, attempted_at)
             return
 
-        missing_targets = [target for target in targets if target not in yielded_targets]
+        missing_targets = [
+            norm
+            for target in targets
+            if (norm := _normalize_target_name(target)) and norm not in yielded_targets
+        ]
         if missing_targets:
             attempted_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
             for target_name in missing_targets:
