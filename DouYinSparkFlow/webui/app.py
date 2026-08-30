@@ -1221,6 +1221,30 @@ def create_app():
         lines = len(text.splitlines()) if text.strip() else 0
         return JSONResponse({"text": text, "lines": lines})
 
+    @app.post("/ops/logs/clear")
+    async def logs_clear(request: Request):
+        # 清除运行日志：截断文件（不删除，避免任务子进程持有句柄时句柄失效）
+        maybe_redirect = require_admin(request)
+        if maybe_redirect:
+            return maybe_redirect
+        form = await request.form()
+        if not validate_csrf(request, str(form.get("csrf_token", ""))):
+            return JSONResponse({"ok": False, "error": "Invalid CSRF token"}, status_code=403)
+        log_path = Path(get_app_settings().get("ops_log_file") or default_ops_log_path())
+        resolved = log_path.expanduser().resolve()
+        logs_root = (data_dir() / "logs").resolve()
+        if logs_root not in resolved.parents:
+            logger.warning("Refusing to clear ops log outside logs dir: %s", resolved)
+            return JSONResponse({"ok": False, "error": "日志文件路径无效"}, status_code=400)
+        try:
+            if log_path.exists():
+                with open(log_path, "wb"):
+                    pass
+            return JSONResponse({"ok": True})
+        except OSError as exc:
+            logger.warning("Failed to clear ops log %s: %s", log_path, exc)
+            return JSONResponse({"ok": False, "error": f"清除失败：{exc}"}, status_code=400)
+
     def _ops_log_content() -> str:
         log_path = Path(get_app_settings().get("ops_log_file") or default_ops_log_path())
         # L19：读取前校验路径位于 data_dir()/logs/ 下（下载端点无写入限制，读取同样要收紧）

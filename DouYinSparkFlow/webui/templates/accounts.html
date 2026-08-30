@@ -103,7 +103,12 @@
       </div>
     </details>
     {% else %}
-    <div class="empty-state account-grid-empty">当前没有账号，点击右上角"添加新账号"。</div>
+    <div class="empty-state account-grid-empty">
+      <span class="empty-state-icon"><i data-lucide="user-plus"></i></span>
+      <strong class="empty-state-title">还没有账号</strong>
+      <p class="empty-state-copy">添加抖音账号后，即可自动维护每日火花。</p>
+      <button class="empty-state-action login-desktop-open" type="button" data-login-mode="add"><i data-lucide="user-plus"></i><span>添加新账号</span></button>
+    </div>
     {% endfor %}
   </div>
 </div>

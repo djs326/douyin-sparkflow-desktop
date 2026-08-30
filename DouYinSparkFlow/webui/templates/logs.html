@@ -27,18 +27,25 @@
       </label>
       <button type="button" class="button button-quiet" id="logs-refresh-btn">↻ 刷新</button>
       <button type="button" class="button button-primary" id="logs-download-btn">⬇ 下载日志</button>
+      <button
+        type="button"
+        class="button button-danger"
+        id="logs-clear-btn"
+        data-confirm
+        data-confirm-title="清除运行日志"
+        data-confirm="将清空当前运行日志（不影响正在进行的任务）。确认继续吗？"
+        data-confirm-accept="确认清除"
+      >
+        <i data-lucide="trash-2"></i><span>清除日志</span>
+      </button>
+      <input type="hidden" id="logs-csrf" value="{{ csrf_token }}">
     </div>
   </div>
 
-  {% if log_tail and log_tail.strip() %}
   <div style="padding: 0 20px 20px;">
-    <pre class="logs-code" id="logs-code">{{ log_tail }}</pre>
+    <pre class="logs-code" id="logs-code" {% if not (log_tail and log_tail.strip()) %}hidden{% endif %}>{{ log_tail }}</pre>
+    <div class="logs-empty" id="logs-empty" {% if log_tail and log_tail.strip() %}hidden{% endif %}>当前没有日志输出。任务运行后这里会实时显示。</div>
   </div>
-  {% else %}
-  <div style="padding: 0 20px 20px;">
-    <div class="logs-empty" id="logs-empty">当前没有日志输出。任务运行后这里会实时显示。</div>
-  </div>
-  {% endif %}
 </section>
 
 <script>
@@ -60,25 +67,25 @@
 
     const renderBody = (text) => {
       const has = !!(text && text.trim());
-      if (has) {
-        if (emptyEl) emptyEl.style.display = "none";
-        if (codeEl) {
-          codeEl.style.display = "";
-          codeEl.textContent = text;
-          // 始终滚动到底部，展示最新日志
-          codeEl.scrollTop = codeEl.scrollHeight;
-        }
-        if (lineEl) lineEl.textContent = `${text.trim().split(/\r?\n/).length} 行`;
-      } else {
-        if (codeEl) codeEl.style.display = "none";
-        if (emptyEl) emptyEl.style.display = "";
-        if (lineEl) lineEl.textContent = "0 行";
+      // 两个元素恒在 DOM（修复：有日志时空态 div 不在 DOM，清除后整块空白），
+      // 用 hidden 属性切换显隐
+      if (codeEl) {
+        codeEl.hidden = !has;
+        if (has) codeEl.textContent = text;
+      }
+      if (emptyEl) emptyEl.hidden = has;
+      if (lineEl) {
+        lineEl.textContent = has ? `${text.trim().split(/\r?\n/).length} 行` : "0 行";
+      }
+      if (has && codeEl) {
+        // 始终滚动到底部，展示最新日志
+        codeEl.scrollTop = codeEl.scrollHeight;
       }
     };
 
     const refresh = async () => {
       try {
-        // M15：轮询改 JSON 接口（原实现每 5s 拉整页 HTML + DOMParser）
+        // 轮询走 JSON 接口（后端只读 64KB 尾部）：避免每 5s 拉整页 HTML + DOMParser
         const res = await fetch("/ops/logs/tail", { credentials: "same-origin" });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
@@ -148,6 +155,26 @@
         } catch (err) {
           downloadBtn.textContent = "保存失败";
           setTimeout(() => { downloadBtn.textContent = original; }, 3000);
+        }
+      });
+    }
+
+    // 清除日志：data-confirm 确认后（capture 放行）执行 POST /ops/logs/clear
+    const clearBtn = document.getElementById("logs-clear-btn");
+    if (clearBtn) {
+      clearBtn.addEventListener("click", async () => {
+        const csrfNode = document.getElementById("logs-csrf");
+        try {
+          const body = new FormData();
+          body.set("csrf_token", csrfNode ? csrfNode.value : "");
+          const res = await fetch("/ops/logs/clear", { method: "POST", body, credentials: "same-origin" });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
+          renderBody("");
+          if (statusEl) statusEl.textContent = "已清除日志";
+          if (lineEl) lineEl.textContent = "0 行";
+        } catch (err) {
+          if (statusEl) statusEl.textContent = `清除失败：${err.message}`;
         }
       });
     }
