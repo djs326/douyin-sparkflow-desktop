@@ -396,7 +396,6 @@
   const qrStatus = document.querySelector("[data-login-qr-status]");
   let timer = null;
   let heartbeatTimer = null;
-  let countdownTimer = null;
   let qrRefreshTimer = null;
   let workspace = { state: "closed", active: false, position: 0, ticket: "" };
   if (displayMode === "native" && copyLoginUrlButton) copyLoginUrlButton.hidden = true;
@@ -698,10 +697,11 @@
   timer = window.setInterval(pollStatus, 5000);
   heartbeatTimer = window.setInterval(heartbeat, 5000);
   // 工作区由心跳自动续期，无需本地倒计时
-  countdownTimer = null;
   window.addEventListener("pagehide", () => {
     window.clearInterval(timer);
     window.clearInterval(heartbeatTimer);
+    // qrRefreshTimer 是 setTimeout，pagehide 时一并清理，避免页面切换后残留重试
+    window.clearTimeout(qrRefreshTimer);
   });
 })();
 
@@ -834,17 +834,29 @@
     }
   };
 
+  // 安全校验：tag.path 来自 sessionStorage，仅允许同源站内路径——
+  // startsWith("/") 会被 "//evil.com"（协议相对）或 "/\evil.com"（反斜杠当正斜杠）绕过
+  const isSafeTagPath = (value) => {
+    try {
+      const url = new URL(String(value || ""), window.location.origin);
+      return url.origin === window.location.origin;
+    } catch {
+      return false;
+    }
+  };
+
   const render = () => {
     const tags = readTags();
     const currentPath = window.location.pathname;
     scroll.innerHTML = "";
     tags.forEach((tag) => {
+      const tagPath = isSafeTagPath(tag.path) ? tag.path : HOME_PATH;
       const chip = document.createElement("span");
-      chip.className = `tag-chip${tag.path === currentPath ? " active" : ""}`;
+      chip.className = `tag-chip${tagPath === currentPath ? " active" : ""}`;
       const label = document.createElement("span");
       label.textContent = tag.title;
       chip.append(label);
-      if (tag.path !== HOME_PATH) {
+      if (tagPath !== HOME_PATH) {
         const close = document.createElement("span");
         close.className = "tag-close";
         close.setAttribute("role", "button");
@@ -852,18 +864,18 @@
         close.textContent = "✕";
         close.addEventListener("click", (event) => {
           event.stopPropagation();
-          const remaining = readTags().filter((item) => item.path !== tag.path);
+          const remaining = readTags().filter((item) => isSafeTagPath(item.path) && item.path !== tagPath);
           writeTags(remaining);
           render();
-          if (tag.path === currentPath) {
+          if (tagPath === currentPath) {
             const fallback = remaining[remaining.length - 1] || { path: HOME_PATH };
-            window.location.href = fallback.path;
+            window.location.href = isSafeTagPath(fallback.path) ? fallback.path : HOME_PATH;
           }
         });
         chip.append(close);
       }
       chip.addEventListener("click", () => {
-        if (tag.path !== currentPath) window.location.href = tag.path;
+        if (tagPath !== currentPath) window.location.href = tagPath;
       });
       scroll.append(chip);
     });
