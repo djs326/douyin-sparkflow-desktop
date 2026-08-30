@@ -63,18 +63,19 @@ class ReadLogTailEncodingTests(unittest.TestCase):
             self.assertIn("测试号", text)
 
     def test_large_gbk_log_truncation_does_not_mangle(self):
-        # >64KB 的 GBK 日志：截断起点可能落在汉字中间（43% 概率整段错位乱码），
-        # 修复后必须回退到最近换行，整段无替换符
+        # >64KB 的 GBK 日志：截断起点可能落在汉字中间（43% 概率整段错位乱码）。
+        # 用 "汉"*20+"\n"（GBK 字节长 41，截断偏移 (-65536) mod 41 = 23 恰好落在
+        # 汉字第二字节——修复前必出 \ufffd 的构造）验证回退到最近换行后整段无替换符。
         with tempfile.TemporaryDirectory() as temp_dir:
             log_path = Path(temp_dir) / "douyin-sparkflow.log"
-            line = "账号：吃饺子不吃饺子 目标：压力测试目标 状态：已发送确认成功\n"
-            lines = line * 2000  # 约 160KB，远超 64KB 截断窗口
-            log_path.write_bytes(lines.encode("gbk"))
+            line = "汉" * 20 + "\n"
+            log_path.write_bytes((line * 3000).encode("gbk"))  # 约 120KB，远超 64KB 窗口
             with patch.object(ops, "get_app_settings", return_value={"ops_log_file": str(log_path)}):
                 text = ops.read_log_tail(200)
-            self.assertIn("吃饺子不吃饺子", text)
             self.assertNotIn("\ufffd", text)
-            self.assertLessEqual(len(text.splitlines()), 201)
+            self.assertIn("汉汉汉", text)
+            # 首行必须完整（截断起点回退到行首）
+            self.assertEqual(line.rstrip("\n"), text.splitlines()[0])
 
 
 if __name__ == "__main__":
