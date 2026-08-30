@@ -373,6 +373,9 @@ function createWebpackRequire(bundleDir, cookieString) {
   // - 紧急回退阀：SPARKFLOW_PROTOCOL_ALLOW_CODE_GEN=1 恢复旧行为
   //   （若 SDK 某 bundle 依赖 eval 导致功能异常时使用）。
   const allowCodeGen = process.env.SPARKFLOW_PROTOCOL_ALLOW_CODE_GEN === "1";
+  if (allowCodeGen) {
+    console.error("[protocol_sender] SPARKFLOW_PROTOCOL_ALLOW_CODE_GEN=1: sandbox codeGeneration hardening DISABLED");
+  }
   const contextified = vm.createContext(
     context,
     allowCodeGen ? undefined : { codeGeneration: { strings: false, wasm: false } },
