@@ -522,8 +522,24 @@ def read_log_tail(lines=200):
     log_path = Path(get_app_settings().get("ops_log_file") or default_ops_log_path())
     if not log_path.exists():
         return ""
-    content = read_text_autodetect(log_path).splitlines()
-    return "\n".join(content[-lines:])
+    try:
+        # M15：seek 尾部只读最后 64KB（足够覆盖 200 行），避免每次轮询全量读整份
+        # 日志（任务长时间运行后可达数 MB，页面每 5s 轮询浪费大量 I/O）
+        with open(log_path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            read_size = min(size, 64 * 1024)
+            handle.seek(size - read_size)
+            tail_bytes = handle.read(read_size)
+        tail_text = tail_bytes.decode("utf-8", errors="replace")
+        if read_size < size and "\n" in tail_text:
+            # 截断起点可能落在行中间：丢弃首行
+            tail_text = tail_text.split("\n", 1)[1]
+        content = tail_text
+    except OSError:
+        # 读取失败（文件被占用等）回退全量读
+        content = read_text_autodetect(log_path)
+    return "\n".join(content.splitlines()[-lines:])
 
 
 def read_crontab():

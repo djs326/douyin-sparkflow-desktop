@@ -78,17 +78,11 @@
 
     const refresh = async () => {
       try {
-        const res = await fetch("/ops/logs", { credentials: "same-origin", headers: { "Accept": "text/html" } });
+        // M15：轮询改 JSON 接口（原实现每 5s 拉整页 HTML + DOMParser）
+        const res = await fetch("/ops/logs/tail", { credentials: "same-origin" });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const html = await res.text();
-        const doc = new DOMParser().parseFromString(html, "text/html");
-        const fetched = doc.getElementById("logs-code");
-        const fetchedEmpty = doc.getElementById("logs-empty");
-        if (fetched) {
-          renderBody(fetched.textContent);
-        } else if (fetchedEmpty) {
-          renderBody("");
-        }
+        const data = await res.json();
+        renderBody(data.text || "");
         if (statusEl) statusEl.textContent = fmtTime();
       } catch (err) {
         if (statusEl) statusEl.textContent = `刷新失败：${err.message}`;
