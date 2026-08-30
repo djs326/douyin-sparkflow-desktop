@@ -78,6 +78,7 @@ from webui.login_lock import (
 )
 from webui.ops import (
     TASK_ALREADY_RUNNING,
+    _schedule_timezone,
     autostart_enabled,
     get_overview_snapshot,
     get_ops_snapshot,
@@ -179,11 +180,9 @@ def coerce_int(value, default, minimum=0):
         return max(minimum, int(default))
 
 
-def _schedule_timezone():
-    return timezone(timedelta(hours=8), name="Asia/Shanghai")
-
-
 def _parse_sent_at(raw_value):
+    # L22：时区统一走 ops._schedule_timezone（SPARKFLOW_TIMEZONE → TZ → Asia/Shanghai），
+    # 不再固定 UTC+8（原实现与任务侧口径不一致，配置非东八区时区时页面快照会漂移）
     return parse_sent_at(raw_value, _schedule_timezone())
 
 
@@ -1211,6 +1210,16 @@ def create_app():
                 "log_tail": read_log_tail(400),
             },
         )
+
+    @app.get("/ops/logs/tail")
+    async def logs_tail(request: Request):
+        # M15：日志页轮询改 JSON 接口（原实现每 5s 拉整页 HTML + DOMParser 解析）
+        maybe_redirect = require_admin(request)
+        if maybe_redirect:
+            return maybe_redirect
+        text = read_log_tail(400)
+        lines = len(text.splitlines()) if text.strip() else 0
+        return JSONResponse({"text": text, "lines": lines})
 
     def _ops_log_content() -> str:
         log_path = Path(get_app_settings().get("ops_log_file") or default_ops_log_path())
