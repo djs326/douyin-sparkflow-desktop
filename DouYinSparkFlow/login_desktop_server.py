@@ -15,7 +15,10 @@ from playwright.async_api import async_playwright
 from core.browser import configure_playwright_environment
 from core.login import collect_login_result
 from utils.config import Environment, data_dir, get_environment, login_desktop_auth_token
+from utils.logger import setup_logger
 from utils.web_middleware import localhost_only_middleware
+
+logger = setup_logger(name="login_desktop_server")
 
 # 打包版必须指向 exe 旁的 chrome\ 目录，否则 Playwright 找不到内置 Chromium
 configure_playwright_environment()
@@ -55,6 +58,16 @@ LOGIN_HIDDEN_POSITION = "-32000,-32000"
 IDLE_TIMEOUT_SECONDS = max(300, int(os.getenv("LOGIN_DESKTOP_IDLE_TIMEOUT_SECONDS", "1800")))
 STOP_AFTER_EXPORT_SECONDS = max(0, int(os.getenv("LOGIN_DESKTOP_STOP_AFTER_EXPORT_SECONDS", "60")))
 STATUS_CACHE_SECONDS = max(1, int(os.getenv("LOGIN_DESKTOP_STATUS_CACHE_SECONDS", "3")))
+# /debug/* 调试端点默认关闭：可导出 cookies 并远程操控登录浏览器，默认禁用；
+# 仅显式设置 LOGIN_DESKTOP_DEBUG=1 才挂载。
+LOGIN_DESKTOP_DEBUG = str(os.getenv("LOGIN_DESKTOP_DEBUG", "")).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+# /debug/action 的 goto 仅允许跳转抖音官方域名（防 file:// 与本机任意文件读取/SSRF 内网）
+DEBUG_GOTO_ALLOWED_HOSTS = {"creator.douyin.com", "www.douyin.com"}
 LOGIN_NETWORK_MODE = str(os.getenv("LOGIN_DESKTOP_PROXY_MODE", "auto")).strip().lower()
 if LOGIN_NETWORK_MODE not in {"auto", "direct", "proxy"}:
     LOGIN_NETWORK_MODE = "auto"
@@ -443,7 +456,22 @@ class LoginDesktopManager:
                     pass
                 self.playwright = None
             if clear_profile and PROFILE_DIR.exists():
-                shutil.rmtree(PROFILE_DIR, ignore_errors=True)
+                # context.close() 后 Chromium 可能仍持有 profile 文件句柄（异步退出），
+                # 立即 rmtree 会失败并留下残留（"重置后登录页白屏"的隐性来源）：
+                # 重试几次并留出间隔，最后失败仅告警不抛出。
+                for attempt in range(3):
+                    try:
+                        shutil.rmtree(PROFILE_DIR)
+                        break
+                    except OSError as exc:
+                        if attempt == 2:
+                            logger.warning(
+                                "Failed to remove login profile %s after retries: %s",
+                                PROFILE_DIR,
+                                exc,
+                            )
+                        else:
+                            await asyncio.sleep(1)
             self._status_cache = None
             self._status_checked_at = 0.0
 
@@ -490,7 +518,7 @@ class LoginDesktopManager:
                 "username": "",
                 "unique_id": "",
                 "current_url": "",
-                "profile_dir": str(PROFILE_DIR),
+                "profile_active": False,
                 "network": self._network_payload(),
             }
             self._status_cache = payload
@@ -516,7 +544,7 @@ class LoginDesktopManager:
                 "username": "",
                 "unique_id": "",
                 "current_url": "",
-                "profile_dir": str(PROFILE_DIR),
+                "profile_active": False,
                 "network": self._network_payload(),
             }
             self._status_cache = payload
@@ -560,7 +588,7 @@ class LoginDesktopManager:
             "username": username,
             "unique_id": unique_id,
             "current_url": current_url,
-            "profile_dir": str(PROFILE_DIR),
+            "profile_active": True,
             "network": self._network_payload(),
         }
         self._status_cache = payload
@@ -813,6 +841,10 @@ AUTH_TOKEN = login_desktop_auth_token()
 
 @app.middleware("http")
 async def _auth_and_host_guard(request: Request, call_next):
+    if request.method == "OPTIONS":
+        # CORS 预检：本服务仅限本机后端调用（webui 服务端转发），OPTIONS 无副作用，
+        # 直接放行避免跨端口+自定义头调用被预检静默阻断
+        return Response(status_code=204)
     if request.url.path != "/health" and not _request_authorized(request):
         return Response("Forbidden: missing or invalid auth token", status_code=403)
     return await localhost_only_middleware(request, call_next)
@@ -838,6 +870,10 @@ async def preflight():
 
 @app.get("/status")
 async def status():
+    # 低频续期：webui 会高频轮询 /status，用户在扫码/处理滑块期间若 idle 超时
+    # 会静默关闭登录浏览器；距上次真实活动 >60s 时续期一次（节流，避免每次轮询都续）
+    if time.monotonic() - manager._last_activity > 60:
+        manager.mark_activity()
     return await manager.status()
 
 
@@ -882,14 +918,37 @@ async def refresh_qr():
 
 @app.post("/export")
 async def export():
-    page = await manager._get_active_page()
+    # 与二维码刷新/打开登录共用页面操作锁：export 期间禁止并发导航，
+    # 避免 export 超时后的 goto(WWW_SELF_URL) 打断刷新中的二维码页面、cookies 提取路径漂移
     try:
-        result = await manager.export()
-    except Exception as creator_exc:
+        await asyncio.wait_for(manager._page_operation_lock.acquire(), timeout=5)
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=503, detail="登录页正忙，请稍后重试") from exc
+    try:
+        page = await manager._get_active_page()
         try:
-            result = await collect_www_login_result(page, manager.context)
-        except Exception as www_exc:
-            raise HTTPException(status_code=400, detail=f"创作者导出失败：{creator_exc}；www 导出失败：{www_exc}")
+            result = await manager.export()
+        except Exception as creator_exc:
+            try:
+                result = await collect_www_login_result(page, manager.context)
+            except Exception as www_exc:
+                # 只回显异常类名，详情进日志（Playwright 异常原文含 URL/页面状态）
+                logger.warning(
+                    "export failed: creator=%s (%s); www=%s (%s)",
+                    type(creator_exc).__name__,
+                    creator_exc,
+                    type(www_exc).__name__,
+                    www_exc,
+                )
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"创作者导出失败：{type(creator_exc).__name__}；"
+                        f"www 导出失败：{type(www_exc).__name__}"
+                    ),
+                )
+    finally:
+        manager._page_operation_lock.release()
     # 无论走哪条提取路径，保存成功后都调度自动停止登录浏览器（释放内存）
     manager.schedule_stop_after_export()
     return {"ok": True, "result": result}
@@ -935,8 +994,36 @@ async def login_qr():
     raise HTTPException(status_code=202, detail="登录二维码正在生成中", headers={"Retry-After": "2"})
 
 
+def _debug_enabled():
+    """/debug/* 默认关闭；仅 LOGIN_DESKTOP_DEBUG=1 时可用。"""
+    if not LOGIN_DESKTOP_DEBUG:
+        raise HTTPException(
+            status_code=403,
+            detail="Debug endpoints are disabled (set LOGIN_DESKTOP_DEBUG=1 to enable)",
+        )
+
+
+def _debug_goto_allowed(url):
+    """/debug/action 的 goto 白名单校验：仅 http(s) 且抖音官方域名（防 file:// 读本机文件/SSRF）。"""
+    parsed = urlsplit(str(url or ""))
+    host = (parsed.netloc or "").split(":", 1)[0].lower()
+    return parsed.scheme in {"http", "https"} and host in DEBUG_GOTO_ALLOWED_HOSTS
+
+
+def _sanitize_headers(headers):
+    """剥离请求/响应头中的敏感字段（Cookie/认证类），防止全量网络捕获泄漏登录态。"""
+    sensitive_keys = {"cookie", "authorization", "proxy-authorization", "x-tt-token"}
+    return {
+        key: "[redacted]" if key.lower() in sensitive_keys or any(
+            token in key.lower() for token in ("token", "secret", "cookie", "session")
+        ) else value
+        for key, value in dict(headers or {}).items()
+    }
+
+
 @app.get("/debug/screenshot")
 async def debug_screenshot():
+    _debug_enabled()
     page = await manager._get_active_page()
     data = await page.screenshot(full_page=False, type="png")
     return Response(content=data, media_type="image/png")
@@ -944,6 +1031,7 @@ async def debug_screenshot():
 
 @app.get("/debug/snapshot")
 async def debug_snapshot():
+    _debug_enabled()
     page = await manager._get_active_page()
     items = await page.evaluate(
         r"""() => {
@@ -975,6 +1063,7 @@ async def debug_snapshot():
 
 @app.post("/debug/action")
 async def debug_action(request: Request):
+    _debug_enabled()
     page = await manager._get_active_page()
     payload = await request.json()
     action = payload.get("action")
@@ -991,7 +1080,14 @@ async def debug_action(request: Request):
     elif action == "press":
         await page.keyboard.press(str(payload.get("key") or "Enter"))
     elif action == "goto":
-        await page.goto(str(payload.get("url") or REMOTE_LOGIN_URL), wait_until="commit", timeout=15000)
+        # 仅允许跳转抖音官方域名：禁止 file:// 与本机任意 URL（任意本地文件读取/SSRF）
+        url = str(payload.get("url") or REMOTE_LOGIN_URL)
+        if not _debug_goto_allowed(url):
+            raise HTTPException(
+                status_code=400,
+                detail=f"goto 仅允许抖音官方域名（白名单 {sorted(DEBUG_GOTO_ALLOWED_HOSTS)}），收到 {url!r}",
+            )
+        await page.goto(url, wait_until="commit", timeout=15000)
     elif action == "eval":
         result = await page.evaluate(str(payload.get("script") or "undefined"))
         return {"ok": True, "result": result, "url": page.url}
@@ -1046,57 +1142,72 @@ async def debug_action(request: Request):
 _net_log = []
 _net_capturing = False
 _net_max = 500
+# 模块级 handler 引用：同一 page 重复 start 时先 remove_listener 再绑定，避免累积
+_net_request_handler = None
+_net_response_handler = None
+
+
+async def _net_on_request(req):
+    if not _net_capturing:
+        return
+    if len(_net_log) >= _net_max:
+        return
+    try:
+        _net_log.append({
+            "ts": time.time(),
+            "phase": "request",
+            "method": req.method,
+            "url": req.url,
+            "headers": _sanitize_headers(dict(req.headers)),
+        })
+    except Exception:
+        pass
+
+
+async def _net_on_response(resp):
+    if not _net_capturing:
+        return
+    if len(_net_log) >= _net_max:
+        return
+    try:
+        body_preview = None
+        try:
+            body_preview = (await resp.text())[:300]
+        except Exception:
+            pass
+        _net_log.append({
+            "ts": time.time(),
+            "phase": "response",
+            "url": resp.url,
+            "status": resp.status,
+            "headers": _sanitize_headers(dict(resp.headers)),
+            "body": body_preview,
+        })
+    except Exception:
+        pass
+
 
 @app.post("/debug/net_capture")
 async def net_capture(request: Request):
-    global _net_capturing
+    global _net_capturing, _net_request_handler, _net_response_handler
+    _debug_enabled()
     payload = await request.json()
     action_type = payload.get("type", "start")
     page = await manager._get_active_page()
     if action_type == "start":
         _net_log.clear()
         _net_capturing = True
-
-        async def on_request(req):
-            if not _net_capturing:
-                return
-            if len(_net_log) >= _net_max:
-                return
-            try:
-                _net_log.append({
-                    "ts": __import__("time").time(),
-                    "phase": "request",
-                    "method": req.method,
-                    "url": req.url,
-                    "headers": dict(req.headers),
-                })
-            except Exception:
-                pass
-
-        async def on_response(resp):
-            if not _net_capturing:
-                return
-            if len(_net_log) >= _net_max:
-                return
-            try:
-                body_preview = None
+        # 重复 start 前先注销旧 handler，避免监听器累积（内存滞留 + 重复记录）
+        for event, handler in (("request", _net_request_handler), ("response", _net_response_handler)):
+            if handler is not None:
                 try:
-                    body_preview = (await resp.text())[:300]
+                    page.remove_listener(event, handler)
                 except Exception:
                     pass
-                _net_log.append({
-                    "ts": __import__("time").time(),
-                    "phase": "response",
-                    "url": resp.url,
-                    "status": resp.status,
-                    "headers": dict(resp.headers),
-                    "body": body_preview,
-                })
-            except Exception:
-                pass
-
-        page.on("request", lambda req: __import__("asyncio").ensure_future(on_request(req)))
-        page.on("response", lambda resp: __import__("asyncio").ensure_future(on_response(resp)))
+        _net_request_handler = _net_on_request
+        _net_response_handler = _net_on_response
+        page.on("request", _net_request_handler)
+        page.on("response", _net_response_handler)
         return {"ok": True, "msg": "capture started"}
     elif action_type == "stop":
         _net_capturing = False
@@ -1108,17 +1219,14 @@ async def net_capture(request: Request):
         return {"ok": True}
     return {"ok": False, "error": "unknown type"}
 
+
 @app.get("/debug/net_log")
 async def get_net_log():
+    _debug_enabled()
     return {"count": len(_net_log), "capturing": _net_capturing, "log": _net_log.copy()}
 
 if __name__ == "__main__":
     # 只绑定本机回环地址：本服务可导出 cookies，绝不可暴露到局域网。
     # token 落在 data_dir()/state/login_desktop_auth.token，webui 自动读取。
-    print(
-        f"[login_desktop_server] auth token: {AUTH_TOKEN}\n"
-        f"[login_desktop_server] webui 通过共享数据目录自动携带该 token；"
-        f"外部调用需请求头 X-Login-Desktop-Token。",
-        flush=True,
-    )
+    # 注意：绝不把 AUTH_TOKEN 打印到 stdout（打包版复现方式会重定向落日志）。
     uvicorn.run(app, host="127.0.0.1", port=int(os.getenv("LOGIN_DESKTOP_API_PORT", "18090")), reload=False)
