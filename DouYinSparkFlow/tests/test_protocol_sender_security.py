@@ -1,4 +1,9 @@
-"""协议发送器安全收敛测试：沙箱逃逸防护（H5）、bundle 完整性（H5）、代理环境变量（M2）。"""
+"""协议发送器安全收敛测试：codeGeneration 纵深（H5）、bundle 完整性（H5）、代理环境变量（M2）。
+
+威胁模型说明：Node 官方声明 vm 不是安全边界——注入外层对象即存在逃逸路径，
+代码可信性由 sha256 manifest（加载内容 == 抖音官方 CDN 基线，SRI 语义）保证；
+vm.createContext(codeGeneration) 禁用沙箱内 eval/new Function 作为纵深。
+"""
 
 import json
 import shutil
@@ -12,30 +17,12 @@ from core import protocol_dispatch
 MJS_PATH = Path(__file__).resolve().parents[1] / "core" / "protocol_sender.mjs"
 PY_DISPATCH_PATH = Path(__file__).resolve().parents[1] / "core" / "protocol_dispatch.py"
 
-# 与 protocol_sender.mjs 中 sandboxSafe 等价的防护逻辑（测试沙箱逃逸是否被阻断）
+# 与 protocol_sender.mjs 等价的沙箱执行配置（createContext + codeGeneration options）
 SANDBOX_BOOTSTRAP = """
 import vm from "node:vm";
-const sandboxSafe = (value) => {
-  if (value === null || (typeof value !== "function" && typeof value !== "object")) return value;
-  return new Proxy(value, {
-    get(target, prop, receiver) {
-      if (prop === "constructor" || prop === "__proto__" || prop === "prototype") return undefined;
-      return Reflect.get(target, prop, receiver);
-    },
-    has(target, prop) {
-      if (prop === "constructor" || prop === "__proto__" || prop === "prototype") return false;
-      return Reflect.has(target, prop);
-    },
-    getPrototypeOf() { return null; },
-  });
-};
-const context = {
-  Buffer: sandboxSafe(Buffer),
-  console,
-  setTimeout: sandboxSafe(setTimeout),
-  crypto: sandboxSafe(crypto),
-};
-context[Symbol.for("nodejs.vm.codeGeneration")] = { strings: false, wasm: false };
+const context = { Buffer, Blob, URL, URLSearchParams, TextDecoder, TextEncoder, crypto, setTimeout };
+context.globalThis = context;
+const contextified = vm.createContext(context, { codeGeneration: { strings: false, wasm: false } });
 """
 
 
@@ -44,10 +31,10 @@ def _node_available():
 
 
 @unittest.skipUnless(_node_available(), "Node.js is not available")
-class ProtocolSandboxEscapadeTests(unittest.TestCase):
-    """H5：vm 沙箱注入对象经 Proxy 包装 + codeGeneration 禁用后，典型逃逸手法必须被阻断。"""
+class ProtocolSandboxCodeGenTests(unittest.TestCase):
+    """H5 纵深：createContext(options) 必须真正禁用沙箱内 eval/new Function。"""
 
-    def _run_escape(self, script):
+    def _run_node(self, script):
         code = SANDBOX_BOOTSTRAP + script
         result = subprocess.run(
             ["node", "--input-type=module", "-e", code],
@@ -58,84 +45,111 @@ class ProtocolSandboxEscapadeTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         return result.stdout.strip()
 
-    def test_constructor_escape_is_blocked(self):
-        output = self._run_escape(
+    def test_new_function_is_blocked_in_sandbox(self):
+        output = self._run_node(
             """
             try {
-              const out = vm.runInNewContext("Buffer.constructor('return process')()", context);
-              console.log("ESCAPED:" + String(out));
+              vm.runInContext("new Function('return 1')", contextified);
+              console.log("ALLOWED");
             } catch (e) {
               console.log("BLOCKED:" + e.name);
             }
             """
         )
         self.assertIn("BLOCKED", output)
-        self.assertNotIn("ESCAPED", output)
+        self.assertNotIn("ALLOWED", output)
 
-    def test_prototype_chain_escape_is_blocked(self):
-        output = self._run_escape(
+    def test_eval_is_blocked_in_sandbox(self):
+        output = self._run_node(
             """
             try {
-              const out = vm.runInNewContext(
-                "Object.getPrototypeOf(Buffer).constructor('return process')()", context
-              );
-              console.log("ESCAPED:" + String(out));
+              vm.runInContext("eval('1+1')", contextified);
+              console.log("ALLOWED");
             } catch (e) {
               console.log("BLOCKED:" + e.name);
             }
             """
         )
         self.assertIn("BLOCKED", output)
-        self.assertNotIn("ESCAPED", output)
-
-    def test_proto_escape_is_blocked(self):
-        output = self._run_escape(
-            """
-            try {
-              const out = vm.runInNewContext("Buffer.__proto__.constructor('return process')()", context);
-              console.log("ESCAPED:" + String(out));
-            } catch (e) {
-              console.log("BLOCKED:" + e.name);
-            }
-            """
-        )
-        self.assertIn("BLOCKED", output)
-        self.assertNotIn("ESCAPED", output)
+        self.assertNotIn("ALLOWED", output)
 
     def test_sandbox_has_no_process_global(self):
-        output = self._run_escape('console.log("PROCESS_TYPE:" + vm.runInNewContext("typeof process", context));')
+        output = self._run_node(
+            'console.log("PROCESS_TYPE:" + vm.runInContext("typeof process", contextified));'
+        )
         self.assertEqual("PROCESS_TYPE:undefined", output)
 
-    def test_injected_function_still_usable_for_legit_calls(self):
-        # Proxy 包装不应破坏正常调用（setTimeout 正常调度）
-        output = self._run_escape(
+
+@unittest.skipUnless(_node_available(), "Node.js is not available")
+class ProtocolSdkFunctionalityTests(unittest.TestCase):
+    """SDK 功能回归防护：真实抖音 bundle 大量使用 new Blob/new URL/instanceof（主包 7771 实测
+    new Blob×7、new URL×9、instanceof×8），沙箱配置不得破坏这些规范构造语义。"""
+
+    def _run_node(self, script):
+        code = SANDBOX_BOOTSTRAP + script
+        result = subprocess.run(
+            ["node", "--input-type=module", "-e", code],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        return result.stdout.strip()
+
+    def test_new_blob_still_works(self):
+        output = self._run_node(
+            'console.log("BLOB_OK:" + (new Blob(["a"]).size));'
+        )
+        self.assertEqual("BLOB_OK:1", output)
+
+    def test_new_url_still_works(self):
+        output = self._run_node(
+            'console.log("URL_OK:" + (new URL("https://creator.douyin.com/").hostname));'
+        )
+        self.assertEqual("URL_OK:creator.douyin.com", output)
+
+    def test_instanceof_still_works(self):
+        output = self._run_node(
+            'console.log("INSTANCE_OK:" + (new URLSearchParams("a=1") instanceof URLSearchParams));'
+        )
+        self.assertEqual("INSTANCE_OK:true", output)
+
+    def test_crypto_get_random_values_still_works(self):
+        output = self._run_node(
+            'const arr = new Uint8Array(4); crypto.getRandomValues(arr); console.log("CRYPTO_OK:" + (arr.length === 4));'
+        )
+        self.assertEqual("CRYPTO_OK:true", output)
+
+    def test_set_timeout_still_works(self):
+        output = self._run_node(
             """
             let fired = false;
             setTimeout(() => { fired = true; }, 5);
-            setTimeout(() => { console.log("FIRED:" + fired); }, 30);
+            setTimeout(() => { console.log("TIMER_OK:" + fired); }, 30);
             """
         )
-        self.assertEqual("FIRED:true", output)
+        self.assertEqual("TIMER_OK:true", output)
 
 
 class ProtocolIntegrityContractTests(unittest.TestCase):
-    """H5：源码契约——mjs/Python 侧必须包含完整性校验与逃逸防护要素。"""
+    """H5：源码契约——完整性校验与 codeGeneration 纵深要素必须存在。"""
 
-    def test_mjs_disables_code_generation(self):
+    def test_mjs_uses_create_context_with_code_generation_options(self):
         source = MJS_PATH.read_text(encoding="utf-8")
-        self.assertIn('Symbol.for("nodejs.vm.codeGeneration")', source)
-        self.assertIn('strings: false', source)
+        self.assertIn("vm.createContext", source)
+        self.assertIn("codeGeneration", source)
+        self.assertIn("strings: false", source)
 
-    def test_mjs_wraps_injected_objects(self):
+    def test_mjs_has_escape_hatch_env(self):
         source = MJS_PATH.read_text(encoding="utf-8")
-        self.assertIn("sandboxSafe", source)
-        self.assertIn("Buffer: sandboxSafe(Buffer)", source)
+        self.assertIn("SPARKFLOW_PROTOCOL_ALLOW_CODE_GEN", source)
 
     def test_mjs_has_sha256_manifest(self):
         source = MJS_PATH.read_text(encoding="utf-8")
         self.assertIn("MANIFEST_FILENAME", source)
         self.assertIn("sha256Hex", source)
         self.assertIn("loadManifest", source)
+        self.assertIn("saveManifest", source)
 
     def test_python_sets_proxy_env(self):
         source = PY_DISPATCH_PATH.read_text(encoding="utf-8")

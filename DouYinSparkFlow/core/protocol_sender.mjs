@@ -29,34 +29,6 @@ const USER_AGENT =
 
 function noop() {}
 
-// 沙箱注入防护（H5）：注入对象属于外层 realm，其 .constructor 指向外层 Function，
-// 恶意 bundle 可借 `obj.constructor('return process')()` 逃逸。用 Proxy 包装注入对象，
-// 拦截 constructor/__proto__/prototype 访问与 getPrototypeOf，使触达外层构造器的
-// 路径全部失效（配合 codeGeneration 禁用，双层防护）。
-function sandboxSafe(value) {
-  if (value === null || (typeof value !== "function" && typeof value !== "object")) {
-    return value;
-  }
-  return new Proxy(value, {
-    get(target, prop, receiver) {
-      if (prop === "constructor" || prop === "__proto__" || prop === "prototype") {
-        return undefined;
-      }
-      return Reflect.get(target, prop, receiver);
-    },
-    has(target, prop) {
-      if (prop === "constructor" || prop === "__proto__" || prop === "prototype") {
-        return false;
-      }
-      return Reflect.has(target, prop);
-    },
-    getPrototypeOf() {
-      // 防 Object.getPrototypeOf(x).constructor 逃逸（牺牲 instanceof 兼容性）
-      return null;
-    },
-  });
-}
-
 function toCookieString(cookies) {
   return (cookies || [])
     .filter((item) => item?.name && item?.value !== undefined)
@@ -153,7 +125,11 @@ const MANIFEST_FILENAME = "manifest.json";
 async function loadManifest(cacheDir) {
   try {
     return JSON.parse(await fs.promises.readFile(path.join(cacheDir, MANIFEST_FILENAME), "utf8"));
-  } catch {
+  } catch (error) {
+    if (error && error.code !== "ENOENT") {
+      // 基线丢失（损坏/被清）：告警并重建，不静默吞掉
+      console.error(`[protocol_sender] failed to read ${MANIFEST_FILENAME}: ${error.message}`);
+    }
     return {};
   }
 }
@@ -209,10 +185,15 @@ async function ensureBundles(cacheDir) {
       } catch {
         content = null;
       }
-      if (content !== null && manifest[filename] && (await sha256Hex(content)) !== manifest[filename]) {
-        console.error(`[protocol_sender] SDK bundle hash mismatch for cached ${filename}, re-downloading`);
-        manifest[filename] = await downloadBundle(cacheDir, url);
-        continue;
+      if (content !== null && manifest[filename]) {
+        if ((await sha256Hex(content)) !== manifest[filename]) {
+          console.error(`[protocol_sender] SDK bundle hash mismatch for cached ${filename}, re-downloading`);
+          manifest[filename] = await downloadBundle(cacheDir, url);
+          continue;
+        }
+      } else if (content !== null) {
+        // 旧版本缓存（无 manifest 基线）：一次性建立 TOFU 基线
+        manifest[filename] = await sha256Hex(content);
       }
       // 仅探测可用性；10s 无响应视为缓存仍可用（避免网络挂起拖死整个任务）
       let cached = true;
@@ -341,14 +322,14 @@ function createWebpackRequire(bundleDir, cookieString) {
     window: {},
     globalThis: null,
     console: sdkConsole,
-    setTimeout: sandboxSafe(setTimeout),
-    clearTimeout: sandboxSafe(clearTimeout),
-    setInterval: sandboxSafe(setInterval),
-    clearInterval: sandboxSafe(clearInterval),
-    Buffer: sandboxSafe(Buffer),
-    TextDecoder: sandboxSafe(TextDecoder),
-    TextEncoder: sandboxSafe(TextEncoder),
-    Blob: sandboxSafe(Blob),
+    setTimeout,
+    clearTimeout,
+    setInterval,
+    clearInterval,
+    Buffer,
+    TextDecoder,
+    TextEncoder,
+    Blob,
     document: documentRef,
     navigator: {
       userAgent: USER_AGENT,
@@ -369,28 +350,38 @@ function createWebpackRequire(bundleDir, cookieString) {
     localStorage: { getItem: () => null, setItem: noop, removeItem: noop },
     sessionStorage: { getItem: () => null, setItem: noop, removeItem: noop },
     performance: { now: () => Date.now() },
-    fetch: sandboxSafe(fetch),
-    XMLHttpRequest: sandboxSafe(XMLHttpRequestStub),
-    WebSocket: sandboxSafe(WebSocketStub),
-    URL: sandboxSafe(URL),
-    URLSearchParams: sandboxSafe(URLSearchParams),
-    atob: sandboxSafe((value) => Buffer.from(value, "base64").toString("binary")),
-    btoa: sandboxSafe((value) => Buffer.from(value, "binary").toString("base64")),
-    crypto: sandboxSafe(crypto),
+    fetch,
+    XMLHttpRequest: XMLHttpRequestStub,
+    WebSocket: WebSocketStub,
+    URL,
+    URLSearchParams,
+    atob: (value) => Buffer.from(value, "base64").toString("binary"),
+    btoa: (value) => Buffer.from(value, "binary").toString("base64"),
+    crypto,
   };
   context.window = context;
   context.globalThis = context;
 
-  // 沙箱逃逸防护（H5）：禁用字符串代码生成（eval / Function 构造器）。
-  // 注入的真实 Node 全局（Buffer/Blob/crypto/fetch 等）的 .constructor 指向外层
-  // Function，恶意 bundle 可借此执行 `Buffer.constructor('return process')()` 逃逸；
-  // 禁止 code generation 后该构造器在沙箱 context 内直接抛 EvalError，逃逸链被斩断。
-  context[Symbol.for("nodejs.vm.codeGeneration")] = { strings: false, wasm: false };
+  // 沙箱执行（供应链纵深，H5）：
+  // - Node 官方声明 vm 不是安全边界；注入的外层对象（Buffer/fetch 等）存在多条
+  //   实测逃逸路径（如 Buffer.from(x).toString.constructor(...)），任何注入即无法
+  //   彻底防逃逸。代码可信性由 sha256 manifest（加载内容 == 抖音官方 CDN 基线）
+  //   保证——这与浏览器 SRI 语义一致，是本修复的信任根基。
+  // - 纵深项：用 vm.createContext(options) 禁用沙箱 realm 内的字符串代码生成
+  //   （eval/new Function），提高逃逸门槛。注意必须用 options 形式而非
+  //   Symbol.for 属性（后者在 Node 24 上实测不生效）。
+  // - 紧急回退阀：SPARKFLOW_PROTOCOL_ALLOW_CODE_GEN=1 恢复旧行为
+  //   （若 SDK 某 bundle 依赖 eval 导致功能异常时使用）。
+  const allowCodeGen = process.env.SPARKFLOW_PROTOCOL_ALLOW_CODE_GEN === "1";
+  const contextified = vm.createContext(
+    context,
+    allowCodeGen ? undefined : { codeGeneration: { strings: false, wasm: false } },
+  );
 
   for (const entry of fs.readdirSync(bundleDir).filter((name) => name.endsWith(".js")).sort()) {
     const code = fs.readFileSync(path.join(bundleDir, entry), "utf8");
     try {
-      vm.runInNewContext(code, context, { filename: entry });
+      vm.runInContext(code, contextified, { filename: entry });
     } catch {
       // Some bundles execute browser-only entrypoints after registering modules.
     }
