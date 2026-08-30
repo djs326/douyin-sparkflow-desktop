@@ -26,7 +26,7 @@ from utils.config import (
     save_config,
 )
 from utils.logger import read_text_autodetect
-from utils.process import pid_is_alive
+from utils.process import hidden_startupinfo, pid_is_alive
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +131,7 @@ def stop_running_task():
                 capture_output=True,
                 timeout=30,
                 check=False,
+                startupinfo=hidden_startupinfo(),
             )
         except Exception as exc:
             logger.error("Failed to kill task pid=%s: %s", pid, exc)
@@ -340,6 +341,7 @@ def run_command(args, cwd=None, timeout=120, check=False):
             text=True,
             capture_output=True,
             timeout=timeout,
+            startupinfo=hidden_startupinfo(),
         )
     except FileNotFoundError:
         # Docker and cron are optional integration points when the UI is run
@@ -390,6 +392,7 @@ def run_background_command(args, log_path, cwd=None, env=None):
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
             env=child_env,
+            startupinfo=hidden_startupinfo(),
         )
         handle.write(f"[WEB_TRIGGER] {started_at} pid={process.pid}\n".encode("utf-8", errors="replace"))
         handle.flush()
@@ -546,7 +549,7 @@ def read_crontab():
     if running_in_container() and HOST_CRONTAB_PATH.exists():
         return HOST_CRONTAB_PATH.read_text(encoding="utf-8", errors="replace")
     try:
-        result = subprocess.run(["crontab", "-l"], text=True, capture_output=True, timeout=10)
+        result = subprocess.run(["crontab", "-l"], text=True, capture_output=True, timeout=10, startupinfo=hidden_startupinfo())
         if result.returncode != 0:
             return ""
         return result.stdout
@@ -682,7 +685,7 @@ def update_daily_schedule(time_string):
             logger.error("update_daily_schedule failed: %s", exc)
             return _empty_result(stderr=str(exc))
     try:
-        process = subprocess.run(["crontab", "-"], input=updated, text=True, capture_output=True, check=True, timeout=10)
+        process = subprocess.run(["crontab", "-"], input=updated, text=True, capture_output=True, check=True, timeout=10, startupinfo=hidden_startupinfo())
         return process
     except Exception as exc:
         logger.error("update_daily_schedule failed: %s", exc)
@@ -729,6 +732,7 @@ def sync_daily_schedule_from_config():
             capture_output=True,
             check=False,
             timeout=10,
+            startupinfo=hidden_startupinfo(),
         )
     except Exception as exc:
         logger.error("sync_daily_schedule_from_config failed: %s", exc)
@@ -1339,6 +1343,7 @@ def _check_image_present():
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=10,
+            startupinfo=hidden_startupinfo(),
         )
         return result.returncode == 0
     except Exception:

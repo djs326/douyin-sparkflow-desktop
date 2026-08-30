@@ -10,6 +10,7 @@ from pathlib import Path
 from core.msg_builder import build_messages_for_targets
 from utils.config import normalize_unique_id, repo_root, update_user_data
 from utils.logger import setup_logger
+from utils.process import hidden_startupinfo
 
 
 logger = setup_logger()
@@ -273,6 +274,7 @@ def _run_protocol_for_user(user, messages_by_target, dry_run, send_strategy, pro
             check=False,
             timeout=600,
             env=child_env,
+            startupinfo=hidden_startupinfo(),
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(

@@ -1,4 +1,4 @@
-"""跨平台安全的进程存活探测工具。
+"""跨平台安全的进程存活探测与子进程窗口隐藏工具。
 
 Windows 上 ``os.kill(pid, 0)`` 的 sig=0 恰好等于 ``CTRL_C_EVENT``，
 Python 会对该值走 ``GenerateConsoleCtrlEvent`` 分支，向与 pid 共享
@@ -7,13 +7,34 @@ Python 会对该值走 ``GenerateConsoleCtrlEvent`` 分支，向与 pid 共享
 
 Windows 改用 ``OpenProcess`` + ``GetExitCodeProcess``（判断 STILL_ACTIVE），
 其他平台保留 ``os.kill(pid, 0)``。
+
+``hidden_startupinfo()`` 解决打包版（GUI 子系统、无控制台）spawn console
+子进程（icacls/node/docker 等）时 Windows 弹出黑色控制台窗口的问题：
+父进程无控制台可继承时，子进程会被分配一个新控制台窗口（一闪而过）。
+所有 subprocess.run/Popen 调用应传 ``startupinfo=hidden_startupinfo()``。
 """
 
 import ctypes
 import os
+import subprocess
 
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _STILL_ACTIVE = 259
+
+
+def hidden_startupinfo():
+    """Windows 返回 SW_HIDE 的 STARTUPINFO（隐藏子进程控制台窗口）；其他平台返回 None。
+
+    打包版（PyInstaller windowed）主进程无控制台，从它 spawn 的 console 子系统
+    子进程（icacls/node/docker 等）会被 Windows 分配新控制台窗口——即用户看到的
+    "黑色控制台闪现"。开发版（python.exe 有控制台）子进程继承控制台，无此问题。
+    """
+    if os.name != "nt":
+        return None
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+    return startupinfo
 
 
 def pid_is_alive(pid):

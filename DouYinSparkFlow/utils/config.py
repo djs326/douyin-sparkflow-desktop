@@ -11,6 +11,8 @@ from copy import deepcopy
 from enum import Enum
 from pathlib import Path
 
+from utils.process import hidden_startupinfo
+
 
 # 使用 "app" 命名空间而非在此调用 setup_logger：
 # utils/logger.py 的 _app_log_path 依赖 utils.config.data_dir，模块初始化期
@@ -275,6 +277,7 @@ def _restrict_file_permissions(path):
                 text=True,
                 timeout=15,
                 check=False,
+                startupinfo=hidden_startupinfo(),
             )
             if result.returncode != 0:
                 logger.warning(
