@@ -23,7 +23,7 @@ from core.browser import (
 from core.msg_builder import build_message, build_message_candidates
 from core.protocol_dispatch import run_protocol_tasks
 from core.send_state import parse_sent_at, target_is_strong_confirmed_today
-from utils.config import data_dir, get_config, get_userData, normalize_unique_id, save_userData
+from utils.config import data_dir, get_config, get_userData, normalize_unique_id, save_userData, update_user_data
 from utils.logger import setup_logger
 from utils.process import pid_is_alive
 
@@ -2023,39 +2023,48 @@ def _coerce_attempt_count(entry):
 
 
 def _persist_account_send_failure(user, category, reason, attempted_at, affected_targets=None):
-    accounts = get_userData(force_reload=True)
-    matched_account = _find_matching_account(accounts, user)
-    if matched_account is None:
-        logger.warning(
-            "Could not find account to persist account-level browser failure for user=%s",
-            user.get("username", "unknown"),
-        )
+    # M5：锁内原子读-改-写，避免与 webui/其他子进程并发写 usersData 互相覆盖账本
+    captured = {}
+
+    def mutate(accounts):
+        matched_account = _find_matching_account(accounts, user)
+        if matched_account is None:
+            logger.warning(
+                "Could not find account to persist account-level browser failure for user=%s",
+                user.get("username", "unknown"),
+            )
+            return None
+
+        affected_targets = list(affected_targets or [])
+        existing_entry = dict(matched_account.get("account_failure") or {})
+        entry = {
+            "category": category,
+            "reason": reason,
+            "firstAttemptAt": existing_entry.get("firstAttemptAt") or attempted_at,
+            "lastAttemptAt": attempted_at,
+            "attemptCount": _coerce_attempt_count(existing_entry) + 1,
+            "lastRunMode": _current_run_mode(),
+            "affectedTargets": affected_targets,
+        }
+        failure_queue = dict(matched_account.get("failure_queue") or {})
+        for target_name in affected_targets:
+            failure_queue.pop(target_name, None)
+        if failure_queue:
+            matched_account["failure_queue"] = failure_queue
+        else:
+            matched_account.pop("failure_queue", None)
+        matched_account["account_failure"] = entry
+        captured["entry"] = entry
+        return accounts
+
+    update_user_data(mutate)
+
+    if "entry" not in captured:
         return
-
-    affected_targets = list(affected_targets or [])
-    existing_entry = dict(matched_account.get("account_failure") or {})
-    entry = {
-        "category": category,
-        "reason": reason,
-        "firstAttemptAt": existing_entry.get("firstAttemptAt") or attempted_at,
-        "lastAttemptAt": attempted_at,
-        "attemptCount": _coerce_attempt_count(existing_entry) + 1,
-        "lastRunMode": _current_run_mode(),
-        "affectedTargets": affected_targets,
-    }
-    failure_queue = dict(matched_account.get("failure_queue") or {})
-    for target_name in affected_targets:
-        failure_queue.pop(target_name, None)
-    if failure_queue:
-        matched_account["failure_queue"] = failure_queue
-    else:
-        matched_account.pop("failure_queue", None)
-    matched_account["account_failure"] = entry
-    save_userData(accounts)
-
+    entry = captured["entry"]
     user["account_failure"] = dict(entry)
     user_queue = dict(user.get("failure_queue") or {})
-    for target_name in affected_targets:
+    for target_name in entry.get("affectedTargets") or []:
         user_queue.pop(target_name, None)
     if user_queue:
         user["failure_queue"] = user_queue
@@ -2063,67 +2072,75 @@ def _persist_account_send_failure(user, category, reason, attempted_at, affected
         user.pop("failure_queue", None)
     logger.warning(
         "Paused browser sends for account %s category=%s affectedTargets=%s reason=%s",
-        matched_account.get("username", "unknown"),
+        user.get("username", "unknown"),
         category,
-        affected_targets,
+        entry.get("affectedTargets"),
         reason,
     )
 
 
 def _clear_account_send_failure(user):
-    accounts = get_userData(force_reload=True)
-    matched_account = _find_matching_account(accounts, user)
-    changed = False
-    if matched_account is not None and matched_account.pop("account_failure", None) is not None:
-        changed = True
-    if changed:
-        save_userData(accounts)
+    def mutate(accounts):
+        matched_account = _find_matching_account(accounts, user)
+        if matched_account is not None and matched_account.pop("account_failure", None) is not None:
+            return accounts
+        return None
+
+    update_user_data(mutate)
     user.pop("account_failure", None)
 
 
 def _persist_friend_index(user, friend_records, scanned_at, *, scan_complete, missing_targets=None):
-    accounts = get_userData(force_reload=True)
-    matched_account = _find_matching_account(accounts, user)
-    if matched_account is None:
-        logger.warning(
-            "Could not find account to persist friend index for user=%s",
-            user.get("username", "unknown"),
-        )
+    # M5：锁内原子读-改-写
+    captured = {}
+
+    def mutate(accounts):
+        matched_account = _find_matching_account(accounts, user)
+        if matched_account is None:
+            logger.warning(
+                "Could not find account to persist friend index for user=%s",
+                user.get("username", "unknown"),
+            )
+            return None
+
+        existing_index = dict(matched_account.get("friend_index") or {})
+        for normalized_name, record in (friend_records or {}).items():
+            entry = dict(existing_index.get(normalized_name) or {})
+            entry.update(
+                {
+                    "visibleName": record.get("visibleName") or "",
+                    "normalizedName": normalized_name,
+                    "stableKeys": list(record.get("stableKeys") or []),
+                    "lastSeenAt": scanned_at,
+                }
+            )
+            existing_index[normalized_name] = entry
+
+        meta = {
+            "lastScanAt": scanned_at,
+            "lastScanComplete": bool(scan_complete),
+            "scannedCount": len(friend_records or {}),
+            "missingTargets": list(missing_targets or []),
+        }
+        matched_account["friend_index"] = existing_index
+        matched_account["friend_index_meta"] = meta
+        if scan_complete and friend_records:
+            matched_account.pop("account_failure", None)
+        captured["meta"] = meta
+        return accounts
+
+    update_user_data(mutate)
+    if "meta" not in captured:
         return
-
-    existing_index = dict(matched_account.get("friend_index") or {})
-    for normalized_name, record in (friend_records or {}).items():
-        entry = dict(existing_index.get(normalized_name) or {})
-        entry.update(
-            {
-                "visibleName": record.get("visibleName") or "",
-                "normalizedName": normalized_name,
-                "stableKeys": list(record.get("stableKeys") or []),
-                "lastSeenAt": scanned_at,
-            }
-        )
-        existing_index[normalized_name] = entry
-
-    meta = {
-        "lastScanAt": scanned_at,
-        "lastScanComplete": bool(scan_complete),
-        "scannedCount": len(friend_records or {}),
-        "missingTargets": list(missing_targets or []),
-    }
-    matched_account["friend_index"] = existing_index
-    matched_account["friend_index_meta"] = meta
-    if scan_complete and friend_records:
-        matched_account.pop("account_failure", None)
-    save_userData(accounts)
-
-    user["friend_index"] = dict(existing_index)
+    meta = captured["meta"]
+    user["friend_index"] = dict((friend_records or {}))
     user["friend_index_meta"] = dict(meta)
     if scan_complete and friend_records:
         user.pop("account_failure", None)
 
     logger.info(
         "Persisted friend index for %s scanned=%s complete=%s missingTargets=%s",
-        matched_account.get("username", "unknown"),
+        user.get("username", "unknown"),
         len(friend_records or {}),
         bool(scan_complete),
         list(missing_targets or []),
@@ -2131,39 +2148,47 @@ def _persist_friend_index(user, friend_records, scanned_at, *, scan_complete, mi
 
 
 def _persist_browser_send_failure(user, target_name, message, category, reason, attempted_at, server_receipt=None):
-    accounts = get_userData(force_reload=True)
-    matched_account = _find_matching_account(accounts, user)
-    if matched_account is None:
-        logger.warning(
-            "Could not find account to persist browser send failure for user=%s target=%s",
-            user.get("username", "unknown"),
-            target_name,
-        )
+    # M5：锁内原子读-改-写
+    captured = {}
+
+    def mutate(accounts):
+        matched_account = _find_matching_account(accounts, user)
+        if matched_account is None:
+            logger.warning(
+                "Could not find account to persist browser send failure for user=%s target=%s",
+                user.get("username", "unknown"),
+                target_name,
+            )
+            return None
+
+        queue = dict(matched_account.get("failure_queue") or {})
+        existing_entry = dict(queue.get(target_name) or {})
+        queue[target_name] = {
+            "category": category,
+            "reason": reason,
+            "message": message,
+            "firstAttemptAt": existing_entry.get("firstAttemptAt") or attempted_at,
+            "lastAttemptAt": attempted_at,
+            "attemptCount": _coerce_attempt_count(existing_entry) + 1,
+            "lastRunMode": _current_run_mode(),
+        }
+        if server_receipt:
+            queue[target_name]["serverReceipt"] = server_receipt
+        matched_account["failure_queue"] = queue
+        captured["entry"] = queue[target_name]
+        return accounts
+
+    update_user_data(mutate)
+
+    if "entry" not in captured:
         return
-
-    queue = dict(matched_account.get("failure_queue") or {})
-    existing_entry = dict(queue.get(target_name) or {})
-    queue[target_name] = {
-        "category": category,
-        "reason": reason,
-        "message": message,
-        "firstAttemptAt": existing_entry.get("firstAttemptAt") or attempted_at,
-        "lastAttemptAt": attempted_at,
-        "attemptCount": _coerce_attempt_count(existing_entry) + 1,
-        "lastRunMode": _current_run_mode(),
-    }
-    if server_receipt:
-        queue[target_name]["serverReceipt"] = server_receipt
-    matched_account["failure_queue"] = queue
-    save_userData(accounts)
-
     user_queue = dict(user.get("failure_queue") or {})
-    user_queue[target_name] = dict(queue[target_name])
+    user_queue[target_name] = dict(captured["entry"])
     user["failure_queue"] = user_queue
 
     logger.warning(
         "Queued failed browser send for %s/%s category=%s reason=%s",
-        matched_account.get("username", "unknown"),
+        user.get("username", "unknown"),
         target_name,
         category,
         reason,
@@ -2171,45 +2196,54 @@ def _persist_browser_send_failure(user, target_name, message, category, reason, 
 
 
 def _persist_browser_send_success(user, target_name, message, sent_at, server_receipt=None):
-    accounts = get_userData(force_reload=True)
-    matched_account = _find_matching_account(accounts, user)
-    if matched_account is None:
-        logger.warning(
-            "Could not find account to persist browser send history for user=%s target=%s",
-            user.get("username", "unknown"),
-            target_name,
-        )
+    # M5：锁内原子读-改-写（发送账本是防重复发送的关键，绝不能被并发写覆盖）
+    captured = {}
+
+    def mutate(accounts):
+        matched_account = _find_matching_account(accounts, user)
+        if matched_account is None:
+            logger.warning(
+                "Could not find account to persist browser send history for user=%s target=%s",
+                user.get("username", "unknown"),
+                target_name,
+            )
+            return None
+
+        receipt_summary = ""
+        if isinstance(server_receipt, dict):
+            receipt_summary = "message_send http={} logid={}".format(
+                server_receipt.get("httpStatus"),
+                server_receipt.get("logid") or "",
+            )
+        strong_entry = {
+            "message": message,
+            "sentAt": sent_at,
+            "status": "confirmed",
+            "confirmationLevel": "strong",
+            "confirmationSource": "cdp_message_send_receipt" if server_receipt else "browser_visible_count_increased",
+            "confirmationDetail": receipt_summary,
+            "needsVerification": False,
+        }
+        if server_receipt:
+            strong_entry["serverReceipt"] = server_receipt
+        history = dict(matched_account.get("message_history") or {})
+        history[target_name] = strong_entry
+        matched_account["message_history"] = history
+        queue = dict(matched_account.get("failure_queue") or {})
+        queue.pop(target_name, None)
+        if queue:
+            matched_account["failure_queue"] = queue
+        else:
+            matched_account.pop("failure_queue", None)
+        matched_account.pop("account_failure", None)
+        captured["strong_entry"] = strong_entry
+        return accounts
+
+    update_user_data(mutate)
+
+    if "strong_entry" not in captured:
         return
-
-    receipt_summary = ""
-    if isinstance(server_receipt, dict):
-        receipt_summary = "message_send http={} logid={}".format(
-            server_receipt.get("httpStatus"),
-            server_receipt.get("logid") or "",
-        )
-    strong_entry = {
-        "message": message,
-        "sentAt": sent_at,
-        "status": "confirmed",
-        "confirmationLevel": "strong",
-        "confirmationSource": "cdp_message_send_receipt" if server_receipt else "browser_visible_count_increased",
-        "confirmationDetail": receipt_summary,
-        "needsVerification": False,
-    }
-    if server_receipt:
-        strong_entry["serverReceipt"] = server_receipt
-    history = dict(matched_account.get("message_history") or {})
-    history[target_name] = strong_entry
-    matched_account["message_history"] = history
-    queue = dict(matched_account.get("failure_queue") or {})
-    queue.pop(target_name, None)
-    if queue:
-        matched_account["failure_queue"] = queue
-    else:
-        matched_account.pop("failure_queue", None)
-    matched_account.pop("account_failure", None)
-    save_userData(accounts)
-
+    strong_entry = captured["strong_entry"]
     user_history = dict(user.get("message_history") or {})
     user_history[target_name] = dict(strong_entry)
     user["message_history"] = user_history
@@ -2223,7 +2257,7 @@ def _persist_browser_send_success(user, target_name, message, sent_at, server_re
 
     logger.info(
         "Persisted browser send history for %s/%s at %s",
-        matched_account.get("username", "unknown"),
+        user.get("username", "unknown"),
         target_name,
         sent_at,
     )
