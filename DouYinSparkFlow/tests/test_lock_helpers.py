@@ -3,6 +3,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from core import tasks
 
@@ -78,6 +79,75 @@ class BrowserAccountLockStaleTests(unittest.TestCase):
             lock_path = self._make_lock(temp_dir, content, 10)
             is_stale, _ = tasks._browser_account_lock_is_stale(lock_path, content)
             self.assertFalse(is_stale)
+
+
+class TaskRunLockIntegrationTests(unittest.TestCase):
+    """task_run_lock 的集成路径：死 pid 锁删除重抢 / 短龄空锁不删除。"""
+
+    def _lock_path(self, root):
+        lock_path = Path(root) / "logs" / "task.run.lock"
+        lock_path.parent.mkdir(parents=True)
+        return lock_path
+
+    def test_removes_dead_pid_lock_and_acquires(self):
+        # 死 pid 残留锁（"99999999\n"，年龄 120s）：首轮 open 抛 FileExistsError，
+        # 应删除残留锁并重抢成功，最终锁内容为当前进程 pid。
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            lock_path = self._lock_path(root)
+            lock_path.write_text("99999999\n", encoding="utf-8")
+            old = time.time() - 120
+            os.utime(lock_path, (old, old))
+
+            real_open = Path.open
+            calls = {"count": 0}
+
+            def fake_open(path, *args, **kwargs):
+                if str(path) == str(lock_path) and calls["count"] == 0:
+                    calls["count"] += 1
+                    raise FileExistsError
+                return real_open(path, *args, **kwargs)
+
+            with (
+                patch.object(Path, "open", fake_open),
+                patch.object(tasks, "data_dir", return_value=root),
+            ):
+                with tasks.task_run_lock():
+                    self.assertTrue(lock_path.exists())
+                    self.assertEqual(
+                        lock_path.read_text(encoding="utf-8").strip(),
+                        str(os.getpid()),
+                    )
+
+    def test_fresh_empty_lock_is_not_removed_and_times_out(self):
+        # 短龄空锁（创建中，age<60s）：不得删除；open 持续失败时应按超时抛出，
+        # 而不是无限忙循环或误删正在创建中的锁。
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            lock_path = self._lock_path(root)
+            lock_path.write_text("", encoding="utf-8")
+
+            real_open = Path.open
+
+            def fake_open(path, *args, **kwargs):
+                if str(path) == str(lock_path):
+                    raise FileExistsError
+                return real_open(path, *args, **kwargs)
+
+            # monotonic 序列：started_at=0；首次超时检查 0.1（未超时，进入 sleep）；
+            # 第二次检查 2000（2000-0 > 1800 → 超时抛出）
+            with (
+                patch.object(Path, "open", fake_open),
+                patch.object(tasks, "data_dir", return_value=root),
+                patch.object(tasks.time, "monotonic", side_effect=[0, 0.1, 2000]),
+                patch.object(tasks.time, "sleep", return_value=None),
+            ):
+                with self.assertRaises(tasks.TaskRunAlreadyInProgress):
+                    with tasks.task_run_lock():
+                        self.fail("不应成功获取锁")
+
+            # 空锁必须保留（未被删除）
+            self.assertTrue(lock_path.exists())
 
 
 if __name__ == "__main__":

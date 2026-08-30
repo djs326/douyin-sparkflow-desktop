@@ -2920,7 +2920,11 @@ def task_run_lock():
             yield
             return
         except FileExistsError as exc:
-            raw_pid = lock_path.read_text(encoding="utf-8", errors="ignore").strip()
+            try:
+                raw_pid = lock_path.read_text(encoding="utf-8", errors="ignore").strip()
+            except OSError:
+                # 文件在判定间隙被并发删除：视为等待重试，避免未捕获 FileNotFoundError
+                raw_pid = ""
             stale_pid = None
             try:
                 stale_pid = int(raw_pid)
