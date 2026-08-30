@@ -794,14 +794,23 @@
     }
   };
 
+  // Nit：tag.path 来自 sessionStorage，仅允许同源站内路径——
+  // startsWith("/") 会被 "//evil.com"（协议相对）或 "/\evil.com"（反斜杠当正斜杠）绕过
+  const isSafeTagPath = (value) => {
+    try {
+      const url = new URL(String(value || ""), window.location.origin);
+      return url.origin === window.location.origin;
+    } catch {
+      return false;
+    }
+  };
+
   const render = () => {
     const tags = readTags();
     const currentPath = window.location.pathname;
     scroll.innerHTML = "";
     tags.forEach((tag) => {
-      // Nit：tag.path 来自 localStorage，仅允许站内相对路径（以 / 开头），
-      // 防止被注入 javascript:/https: 外链
-      const tagPath = String(tag.path || "").startsWith("/") ? tag.path : HOME_PATH;
+      const tagPath = isSafeTagPath(tag.path) ? tag.path : HOME_PATH;
       const chip = document.createElement("span");
       chip.className = `tag-chip${tagPath === currentPath ? " active" : ""}`;
       const label = document.createElement("span");
@@ -815,12 +824,12 @@
         close.textContent = "✕";
         close.addEventListener("click", (event) => {
           event.stopPropagation();
-          const remaining = readTags().filter((item) => String(item.path || "").startsWith("/") && item.path !== tagPath);
+          const remaining = readTags().filter((item) => isSafeTagPath(item.path) && item.path !== tagPath);
           writeTags(remaining);
           render();
           if (tagPath === currentPath) {
             const fallback = remaining[remaining.length - 1] || { path: HOME_PATH };
-            window.location.href = String(fallback.path || HOME_PATH).startsWith("/") ? fallback.path : HOME_PATH;
+            window.location.href = isSafeTagPath(fallback.path) ? fallback.path : HOME_PATH;
           }
         });
         chip.append(close);
