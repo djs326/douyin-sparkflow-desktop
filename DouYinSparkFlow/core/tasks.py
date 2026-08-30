@@ -34,6 +34,11 @@ debug_artifacts_dir.mkdir(parents=True, exist_ok=True)
 CREATOR_HOME_URL = "https://creator.douyin.com/"
 CREATOR_CHAT_URL = "https://creator.douyin.com/creator-micro/data/following/chat"
 
+# 锁文件策略常量（口径与 webui/ops.py 的 task_run_lock_status 保持一致）
+LOCK_OWNER_MAX_AGE_SECONDS = 7200  # 锁文件最大年龄：超过即视为残留（2 小时）
+LOCK_UNREADABLE_STALE_AGE_SECONDS = 60  # 内容不可解析（空/半截写入）时的短年龄阈值
+TASK_LOCK_WAIT_TIMEOUT_SECONDS = 1800  # 任务锁等待上限（30 分钟）
+
 
 async def retry_operation(name, operation, retries=3, delay=2, *args, **kwargs):
     for attempt in range(retries):
@@ -2256,16 +2261,47 @@ def _extract_lock_pid(raw):
         return None
 
 
+def _safe_unlink_lock(lock_path, expected_raw):
+    """删除锁文件前重读校验内容未变（消除 check-then-delete TOCTOU，避免误删他人重建的锁）。
+
+    返回 True 表示已删除；内容已变化/文件已消失时返回 False 且不做任何操作。
+    """
+    try:
+        current = lock_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+    if current != expected_raw:
+        return False
+    try:
+        lock_path.unlink()
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return False
+
+
+def _lock_age_seconds(lock_path):
+    """锁文件年龄（秒）；文件不存在或 stat 失败返回 None。"""
+    try:
+        return datetime.now(timezone.utc).timestamp() - lock_path.stat().st_mtime
+    except OSError:
+        return None
+
+
 def _browser_account_lock_is_stale(lock_path, raw):
     pid = _extract_lock_pid(raw)
     if pid is not None and not _pid_is_alive(pid):
         return True, f"missing pid={pid}"
-    try:
-        age_seconds = datetime.now(timezone.utc).timestamp() - lock_path.stat().st_mtime
-    except OSError:
+    age_seconds = _lock_age_seconds(lock_path)
+    if age_seconds is None:
         return True, "missing lock file"
-    if age_seconds > 7200:
-        return True, f"older than 7200s pid={pid}"
+    if pid is None and age_seconds > LOCK_UNREADABLE_STALE_AGE_SECONDS:
+        # 内容不可解析（空/半截写入）：写入窗口只有毫秒级，超过短年龄阈值即视为残留，
+        # 否则（如 stop_running_task 强杀刚创建锁的进程）会残留空锁卡死后续任务 2 小时。
+        return True, f"unreadable lock (age={age_seconds:.0f}s)"
+    if age_seconds > LOCK_OWNER_MAX_AGE_SECONDS:
+        return True, f"older than {LOCK_OWNER_MAX_AGE_SECONDS}s pid={pid}"
     return False, ""
 
 
@@ -2298,14 +2334,14 @@ async def _acquire_browser_account_lock(user, account_name):
                     lock_path,
                     stale_reason,
                 )
-                try:
-                    lock_path.unlink()
-                except FileNotFoundError:
-                    pass
+                # 删除前重读校验内容未变（TOCTOU：避免删掉并发进程刚重建的新锁）
+                if _safe_unlink_lock(lock_path, raw):
+                    continue
+                # 内容已变化：他人已重建锁，回到循环头部按新内容重新判定
                 continue
 
             now = asyncio.get_running_loop().time()
-            if now - started_at > 7200:
+            if now - started_at > LOCK_OWNER_MAX_AGE_SECONDS:
                 raise RuntimeError(f"timed out waiting for browser account lock for {account_name}")
             if now - last_logged_at >= 30:
                 logger.info(
@@ -2889,21 +2925,25 @@ def task_run_lock():
 
             if stale_pid is not None and not _lock_owner_is_alive(stale_pid):
                 logger.warning("Removing stale task lock owned by missing pid=%s", stale_pid)
-                try:
-                    lock_path.unlink()
-                except FileNotFoundError:
-                    pass
+                _safe_unlink_lock(lock_path, raw_pid)
                 continue
 
             if stale_pid is None:
-                logger.warning("Removing unreadable stale task lock with contents=%r", raw_pid)
-                try:
-                    lock_path.unlink()
-                except FileNotFoundError:
-                    pass
-                continue
+                # 内容不可解析（含空文件）：创建锁与写入 PID 之间只有毫秒级窗口，
+                # 只有超过短年龄阈值才可能是残留；刚创建未写入的锁绝不删除，
+                # 否则会与并发进程形成"删除-重抢"竞态导致双任务同时运行、重复发送。
+                age_seconds = _lock_age_seconds(lock_path)
+                if age_seconds is not None and age_seconds > LOCK_UNREADABLE_STALE_AGE_SECONDS:
+                    logger.warning(
+                        "Removing unreadable stale task lock (age=%.1fs) with contents=%r",
+                        age_seconds,
+                        raw_pid,
+                    )
+                    _safe_unlink_lock(lock_path, raw_pid)
+                    continue
+                # 短龄不可解析锁：视为正在创建中，不删除，转入等待
 
-            if time.monotonic() - started_at > 1800:
+            if time.monotonic() - started_at > TASK_LOCK_WAIT_TIMEOUT_SECONDS:
                 raise TaskRunAlreadyInProgress(
                     f"another task run has been in progress for over 30 minutes (pid={stale_pid})"
                 ) from exc
