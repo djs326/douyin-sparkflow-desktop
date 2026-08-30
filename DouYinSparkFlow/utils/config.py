@@ -167,6 +167,8 @@ def login_desktop_auth_token():
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(token)
         os.replace(temp_name, token_path)
+        # M4：token 等同密码，落盘后收紧 ACL（仅当前用户可读）
+        _restrict_file_permissions(token_path)
     except OSError:
         pass
     return token
@@ -200,10 +202,12 @@ def default_compose_root():
 
 
 def _merge_defaults(data, defaults):
+    # L5：深合并——旧 config.json 已存在的嵌套键（如 sendStrategy）按子键递归合并，
+    # DEFAULT_CONFIG 新增的子键在升级后也能生效（原实现仅一层 dict.update 会整体覆盖）
     merged = deepcopy(defaults)
     for key, value in data.items():
         if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
-            merged[key].update(value)
+            merged[key] = _merge_defaults(value, merged[key])
         else:
             merged[key] = value
     return merged
@@ -230,6 +234,61 @@ def _load_json_file(path, defaults=None):
     return _merge_defaults(data, defaults)
 
 
+# 已收紧 ACL 的文件缓存：键为 (st_dev, st_ino)——
+# _save_json_file 用 mkstemp+os.replace 每次换新 inode（ACL 回父目录继承），
+# 路径字符串缓存会漏掉换 inode 后的重新收紧，故按 inode 键控（每次写盘收紧一次，~14ms 可忽略）
+_ACL_RESTRICTED_PATHS = set()
+
+
+def _restrict_file_permissions(path):
+    """收紧敏感数据文件 ACL（纵深防御，失败仅告警）。
+
+    - POSIX：chmod 600（仅属主可读写）
+    - Windows：icacls 移除继承并仅授予当前用户读/写
+    usersData.json（含全部抖音 cookies）与 login_desktop_auth.token 等同机敏感文件
+    均应经此收紧，避免同机其他用户可读。每个文件 inode 仅执行一次。
+    """
+    try:
+        stat_result = path.stat()
+    except OSError:
+        return
+    key = (stat_result.st_dev, stat_result.st_ino)
+    if key in _ACL_RESTRICTED_PATHS:
+        return
+    try:
+        if os.name == "nt":
+            import subprocess as _subprocess
+
+            username = None
+            try:
+                username = os.getlogin()
+            except (OSError, ValueError):
+                pass
+            if not username:
+                username = os.environ.get("USERNAME", "")
+            if not username:
+                logger.warning("Cannot determine current user for icacls on %s", path)
+                return
+            result = _subprocess.run(
+                ["icacls", str(path), "/inheritance:r", "/grant:r", f"{username}:(R,W)"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            if result.returncode != 0:
+                logger.warning(
+                    "icacls failed for %s: %s",
+                    path,
+                    (result.stderr or result.stdout or "").strip()[:200],
+                )
+        else:
+            os.chmod(path, 0o600)
+        _ACL_RESTRICTED_PATHS.add(key)
+    except Exception as exc:
+        logger.warning("Failed to restrict permissions on %s: %s", path, exc)
+
+
 def _save_json_file(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
@@ -245,6 +304,8 @@ def _save_json_file(path, data):
             os.unlink(temp_name)
         except FileNotFoundError:
             pass
+    # 所有落盘的数据文件统一收紧 ACL（usersData 含 cookies、settings 含 session_secret）
+    _restrict_file_permissions(path)
 
 
 _FILE_LOCK_GUARD = threading.Lock()
@@ -265,13 +326,16 @@ def json_file_lock(name):
     lock_path = data_dir() / "state" / f"{name}.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with _FILE_LOCK_GUARD:
-        handle = open(lock_path, "a+b")
+        # r+b 而非 a+b：a 模式写永远追加（即使 seek 到 0），会导致锁文件每次 +1 字节无限增长
+        if not lock_path.exists():
+            lock_path.write_bytes(b"x")
+        handle = open(lock_path, "r+b")
         try:
             if os.name == "nt":
                 import msvcrt
 
                 handle.seek(0)
-                if handle.tell() == 0:
+                if os.fstat(handle.fileno()).st_size == 0:
                     handle.write(b"x")
                     handle.flush()
                 handle.seek(0)
@@ -299,15 +363,46 @@ def json_file_lock(name):
 def get_config(force_reload=False):
     global config
     if config is None or force_reload:
-        config = _load_json_file(config_path(), DEFAULT_CONFIG)
+        # L4：读-改-写窗口纳入跨进程锁（config.json 可能被 webui 与子进程并发读写）
+        with json_file_lock(CONFIGFILE):
+            config = _load_json_file(config_path(), DEFAULT_CONFIG)
     return deepcopy(config)
 
 
 def save_config(new_config):
     global config
     config = _merge_defaults(new_config, DEFAULT_CONFIG)
-    _save_json_file(config_path(), config)
+    with json_file_lock(CONFIGFILE):
+        _save_json_file(config_path(), config)
     return deepcopy(config)
+
+
+def update_user_data(mutator):
+    """原子读-改-写 usersData.json（锁内完成整个 RMW 窗口）。
+
+    M5：webui 与任务子进程并发写 usersData 时，分开的 get_userData + save_userData
+    存在 last-writer-wins 窗口——任务写入的发送账本（message_history/failure_queue）
+    可被覆盖，导致重复发送/漏发。所有"读-改-写"路径应改走本封装：
+
+        def mutate(accounts):
+            ... 修改 accounts ...
+            return accounts   # 返回 None 表示不写入
+
+        update_user_data(mutate)
+
+    约束：mutator 内不得调用任何会获取 json_file_lock 的函数
+    （get_userData/save_userData/update_user_data/get_config(force_reload=True)），
+    _FILE_LOCK_GUARD 为不可重入 threading.Lock，重入会自锁死锁。
+    """
+    global userData
+    with json_file_lock(USERDATAFILE):
+        accounts = _load_json_file(users_data_path(), [])
+        updated = mutator(accounts)
+        if updated is None:
+            return deepcopy(accounts)
+        userData = updated
+        _save_json_file(users_data_path(), updated)
+    return deepcopy(userData)
 
 
 def get_userData(force_reload=False):

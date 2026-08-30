@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.msg_builder import build_messages_for_targets
-from utils.config import get_userData, normalize_unique_id, repo_root, save_userData
+from utils.config import normalize_unique_id, repo_root, update_user_data
 from utils.logger import setup_logger
 
 
@@ -107,34 +107,41 @@ def _protocol_failure_reason(entry):
     return " ".join(bits)
 
 
+def _find_in_accounts(all_accounts, account):
+    identity = _account_identity_key(account)
+    if not identity:
+        return None
+    for item in all_accounts:
+        if _account_identity_key(item) == identity:
+            return item
+    return None
+
+
 def _persist_protocol_account_failure(account, category, reason, affected_targets=None):
     now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    all_accounts = get_userData(force_reload=True)
-    accounts_by_identity = {
-        identity: item
-        for item in all_accounts
-        for identity in [_account_identity_key(item)]
-        if identity
-    }
-    target_account = accounts_by_identity.get(_account_identity_key(account))
-    if not target_account:
-        return
 
-    affected_targets = list(affected_targets or [])
-    existing_entry = dict(target_account.get("account_failure") or {})
-    target_account["account_failure"] = {
-        "category": category,
-        "reason": reason,
-        "firstAttemptAt": existing_entry.get("firstAttemptAt") or now_iso,
-        "lastAttemptAt": now_iso,
-        "attemptCount": _coerce_attempt_count(existing_entry) + 1,
-        "lastRunMode": "protocol",
-        "affectedTargets": affected_targets,
-    }
-    save_userData(all_accounts)
+    def mutate(all_accounts):
+        target_account = _find_in_accounts(all_accounts, account)
+        if not target_account:
+            return None
+        affected_targets = list(affected_targets or [])
+        existing_entry = dict(target_account.get("account_failure") or {})
+        target_account["account_failure"] = {
+            "category": category,
+            "reason": reason,
+            "firstAttemptAt": existing_entry.get("firstAttemptAt") or now_iso,
+            "lastAttemptAt": now_iso,
+            "attemptCount": _coerce_attempt_count(existing_entry) + 1,
+            "lastRunMode": "protocol",
+            "affectedTargets": affected_targets,
+        }
+        return all_accounts
+
+    update_user_data(mutate)
 
 
 def _record_protocol_target_failure(target_account, target_name, message, category, reason):
+    """在已持有的 accounts 对象上记录目标失败（不写盘，由外层锁内统一保存）。"""
     now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
     queue = dict(target_account.get("failure_queue") or {})
     existing_entry = dict(queue.get(target_name) or {})
@@ -151,81 +158,77 @@ def _record_protocol_target_failure(target_account, target_name, message, catego
 
 
 def _merge_protocol_runtime_state(accounts, result_by_identity):
-    changed = False
-    now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    all_accounts = get_userData(force_reload=True)
-    accounts_by_identity = {
-        identity: account
-        for account in all_accounts
-        for identity in [_account_identity_key(account)]
-        if identity
-    }
+    # M5：锁内原子读-改-写（发送账本合并，防与 webui 并发写互相覆盖）
+    def mutate(all_accounts):
+        changed = False
+        now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
-    for account in accounts:
-        target_account = accounts_by_identity.get(_account_identity_key(account))
-        if not target_account:
-            continue
-
-        result = result_by_identity.get(_account_identity_key(account))
-        if not result:
-            continue
-
-        protocol_cache = result.get("protocol_targets_cache")
-        if protocol_cache is not None:
-            target_account["protocol_targets_cache"] = protocol_cache
-            target_account["protocol_user_id"] = result.get("userId", "")
-            changed = True
-
-        history = dict(target_account.get("message_history") or {})
-        for entry in result.get("sent", []):
-            if entry.get("dryRun") or not entry.get("success", True):
+        for account in accounts:
+            target_account = _find_in_accounts(all_accounts, account)
+            if not target_account:
                 continue
 
-            target = str(entry.get("target", "")).strip()
-            message = str(entry.get("message", "")).strip()
-            if not target or not message:
+            result = result_by_identity.get(_account_identity_key(account))
+            if not result:
                 continue
 
-            history[target] = {
-                "message": message,
-                "sentAt": str(entry.get("sentAt", now_iso)),
-            }
-            changed = True
+            protocol_cache = result.get("protocol_targets_cache")
+            if protocol_cache is not None:
+                target_account["protocol_targets_cache"] = protocol_cache
+                target_account["protocol_user_id"] = result.get("userId", "")
+                changed = True
 
-        if history:
-            target_account["message_history"] = history
+            history = dict(target_account.get("message_history") or {})
+            for entry in result.get("sent", []):
+                if entry.get("dryRun") or not entry.get("success", True):
+                    continue
 
-        for entry in result.get("sent", []):
-            if entry.get("dryRun") or entry.get("success", True):
-                continue
-            target = str(entry.get("target", "")).strip()
-            if not target:
-                continue
-            _record_protocol_target_failure(
-                target_account,
-                target,
-                str(entry.get("message", "")).strip(),
-                _protocol_failure_category(entry),
-                _protocol_failure_reason(entry),
-            )
-            changed = True
+                target = str(entry.get("target", "")).strip()
+                message = str(entry.get("message", "")).strip()
+                if not target or not message:
+                    continue
 
-        unresolved = result.get("unresolved", []) or []
-        for entry in unresolved:
-            target = str(entry.get("target", "")).strip()
-            if not target:
-                continue
-            _record_protocol_target_failure(
-                target_account,
-                target,
-                "",
-                str(entry.get("reason") or "protocol_unresolved"),
-                str(entry.get("reason") or "protocol could not resolve target"),
-            )
-            changed = True
+                history[target] = {
+                    "message": message,
+                    "sentAt": str(entry.get("sentAt", now_iso)),
+                }
+                changed = True
 
-    if changed:
-        save_userData(all_accounts)
+            if history:
+                target_account["message_history"] = history
+
+            for entry in result.get("sent", []):
+                if entry.get("dryRun") or entry.get("success", True):
+                    continue
+                target = str(entry.get("target", "")).strip()
+                if not target:
+                    continue
+                _record_protocol_target_failure(
+                    target_account,
+                    target,
+                    str(entry.get("message", "")).strip(),
+                    _protocol_failure_category(entry),
+                    _protocol_failure_reason(entry),
+                )
+                changed = True
+
+            unresolved = result.get("unresolved", []) or []
+            for entry in unresolved:
+                target = str(entry.get("target", "")).strip()
+                if not target:
+                    continue
+                _record_protocol_target_failure(
+                    target_account,
+                    target,
+                    "",
+                    str(entry.get("reason") or "protocol_unresolved"),
+                    str(entry.get("reason") or "protocol could not resolve target"),
+                )
+                changed = True
+
+        return all_accounts if changed else None
+
+    update_user_data(mutate)
 
 
 def _build_protocol_command():
