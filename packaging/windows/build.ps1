@@ -72,8 +72,24 @@ if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 
 # ---------- 2. bundled Node (node.exe is self-contained) ----------
 Write-Host "[3/5] Locating Node runtime..."
-$NodeExe = (Get-Command node -ErrorAction SilentlyContinue).Source
+# IMPORTANT: PATH may contain node.cmd/.bat shims (e.g. DSH harness node.cmd
+# placeholder, Microsoft Store WindowsApps stub). Copying a .cmd/.bat as
+# node.exe yields an invalid executable ("not a valid application for this
+# OS platform") in the packaged app. Enumerate all candidates, pick the first
+# real .exe with non-zero size, and fall back to `where.exe` enumeration.
+$NodeExe = $null
+foreach ($candidate in (Get-Command node -ErrorAction SilentlyContinue -All | Select-Object -ExpandProperty Source)) {
+    if ($candidate -match '\.exe$') {
+        try {
+            if ((Get-Item -LiteralPath $candidate).Length -gt 0) { $NodeExe = $candidate; break }
+        } catch { }
+    }
+}
+if (-not $NodeExe) {
+    $NodeExe = ((where.exe node 2>$null) | Where-Object { $_ -match '\.exe$' } | Select-Object -First 1)
+}
 if (-not $NodeExe) { throw "Node.js 18+ not found in PATH (needed for the protocol sender)" }
+Write-Host "Using node: $NodeExe"
 
 # ---------- 3. PyInstaller (spec file avoids CLI arg pitfalls) ----------
 Write-Host "[4/5] PyInstaller packaging..."
@@ -156,7 +172,7 @@ $PyOut = Join-Path $DistRoot $AppName
 if (-not (Test-Path $PyOut)) { throw "PyInstaller output not found: $PyOut (clean dist/ and retry)" }
 Move-Item $PyOut $AppDistDir
 
-# 浏览器使用用户本机的 Edge/Chrome（system_browser_executable 探测），不再内置 Chromium
+# Browser uses the user's system Edge/Chrome (probed by system_browser_executable); no bundled Chromium.
 $NodeDir = Join-Path $AppDistDir "node"
 New-Item -ItemType Directory -Force -Path $NodeDir | Out-Null
 Copy-Item -Force $NodeExe (Join-Path $NodeDir "node.exe")
