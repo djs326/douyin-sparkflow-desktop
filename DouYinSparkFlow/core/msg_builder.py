@@ -12,12 +12,27 @@ from utils.config import get_config
 from utils.hitokoto import request_hitokoto
 
 
+# 节日窗口默认值（2026 春节）。L27：硬编码必然过期——可在 config.json 的
+# happyNewYear.festivalWindow.start/end（ISO 日期）覆盖，2027 年后同样生效。
 FESTIVAL_WINDOW_START = date(2026, 2, 16)
 FESTIVAL_WINDOW_END = date(2026, 3, 3)
 
 
+def _festival_window(active_config: dict):
+    raw = (active_config.get("happyNewYear") or {}).get("festivalWindow") or {}
+    try:
+        start = date.fromisoformat(str(raw.get("start") or FESTIVAL_WINDOW_START.isoformat()))
+        end = date.fromisoformat(str(raw.get("end") or FESTIVAL_WINDOW_END.isoformat()))
+        if start <= end:
+            return start, end
+    except (TypeError, ValueError):
+        pass
+    return FESTIVAL_WINDOW_START, FESTIVAL_WINDOW_END
+
+
 def _is_holiday_mode_enabled(active_config: dict, today: date) -> bool:
-    return bool(active_config.get("happyNewYear", {}).get("enabled", False)) and FESTIVAL_WINDOW_START <= today <= FESTIVAL_WINDOW_END
+    start, end = _festival_window(active_config)
+    return bool(active_config.get("happyNewYear", {}).get("enabled", False)) and start <= today <= end
 
 
 def _render_holiday_message(active_config: dict, today: date) -> str:

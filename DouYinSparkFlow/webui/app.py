@@ -99,7 +99,8 @@ from utils.web_middleware import _hostname_allowed, localhost_only_middleware
 
 logger = logging.getLogger(__name__)
 
-# 登录失败限速：同用户名 5 分钟内失败 8 次则锁定 5 分钟（防本机暴力破解）
+# 登录失败限速（Nit）：桌面版本地单机免登录，/login 恒重定向、此限速路径不可达，
+# 为容器版遗留死代码（tests/test_webui_safety.py 有依赖，勿删）
 _LOGIN_FAILURE_WINDOW_SECONDS = 300
 _LOGIN_FAILURE_LIMIT = 8
 _login_failures: dict = {}
