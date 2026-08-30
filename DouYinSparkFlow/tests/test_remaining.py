@@ -79,5 +79,48 @@ class ScheduleTimezoneConsistencyTests(unittest.TestCase):
         self.assertEqual("Asia/Shanghai", getattr(tz, "key", str(tz)))
 
 
+class LogsClearEndpointTests(unittest.TestCase):
+    """日志清除端点：POST + CSRF + 路径校验 + 截断。"""
+
+    def test_clear_truncates_log_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            logs_dir = Path(temp_dir) / "logs"
+            logs_dir.mkdir(parents=True)
+            log_file = logs_dir / "douyin-sparkflow.log"
+            log_file.write_text("line1\nline2\n", encoding="utf-8")
+            client = TestClient(app_module.app, raise_server_exceptions=False)
+            with (
+                patch.object(app_module, "current_user", return_value="admin"),
+                patch.object(app_module, "validate_csrf", return_value=True),
+                patch.object(app_module, "get_app_settings", return_value={"ops_log_file": str(log_file)}),
+                patch.object(app_module, "data_dir", return_value=Path(temp_dir)),
+            ):
+                response = client.post("/ops/logs/clear", data={"csrf_token": "test"})
+            self.assertEqual(200, response.status_code)
+            self.assertTrue(response.json()["ok"])
+            self.assertEqual(0, log_file.stat().st_size)
+
+    def test_clear_rejects_bad_csrf(self):
+        client = TestClient(app_module.app, raise_server_exceptions=False)
+        with (
+            patch.object(app_module, "current_user", return_value="admin"),
+            patch.object(app_module, "validate_csrf", return_value=False),
+        ):
+            response = client.post("/ops/logs/clear", data={"csrf_token": "bad"})
+        self.assertEqual(403, response.status_code)
+
+    def test_clear_rejects_path_outside_logs_dir(self):
+        client = TestClient(app_module.app, raise_server_exceptions=False)
+        with (
+            patch.object(app_module, "current_user", return_value="admin"),
+            patch.object(app_module, "validate_csrf", return_value=True),
+            patch.object(app_module, "get_app_settings", return_value={"ops_log_file": "C:/Windows/System32/evil.log"}),
+            patch.object(app_module, "data_dir", return_value=Path("C:/appdata/DouYinSparkFlow")),
+        ):
+            response = client.post("/ops/logs/clear", data={"csrf_token": "test"})
+        self.assertEqual(400, response.status_code)
+        self.assertFalse(response.json()["ok"])
+
+
 if __name__ == "__main__":
     unittest.main()

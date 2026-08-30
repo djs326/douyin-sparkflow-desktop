@@ -42,15 +42,10 @@
     </div>
   </div>
 
-  {% if log_tail and log_tail.strip() %}
   <div style="padding: 0 20px 20px;">
-    <pre class="logs-code" id="logs-code">{{ log_tail }}</pre>
+    <pre class="logs-code" id="logs-code" {% if not (log_tail and log_tail.strip()) %}hidden{% endif %}>{{ log_tail }}</pre>
+    <div class="logs-empty" id="logs-empty" {% if log_tail and log_tail.strip() %}hidden{% endif %}>当前没有日志输出。任务运行后这里会实时显示。</div>
   </div>
-  {% else %}
-  <div style="padding: 0 20px 20px;">
-    <div class="logs-empty" id="logs-empty">当前没有日志输出。任务运行后这里会实时显示。</div>
-  </div>
-  {% endif %}
 </section>
 
 <script>
@@ -72,19 +67,19 @@
 
     const renderBody = (text) => {
       const has = !!(text && text.trim());
-      if (has) {
-        if (emptyEl) emptyEl.style.display = "none";
-        if (codeEl) {
-          codeEl.style.display = "";
-          codeEl.textContent = text;
-          // 始终滚动到底部，展示最新日志
-          codeEl.scrollTop = codeEl.scrollHeight;
-        }
-        if (lineEl) lineEl.textContent = `${text.trim().split(/\r?\n/).length} 行`;
-      } else {
-        if (codeEl) codeEl.style.display = "none";
-        if (emptyEl) emptyEl.style.display = "";
-        if (lineEl) lineEl.textContent = "0 行";
+      // 两个元素恒在 DOM（修复：有日志时空态 div 不在 DOM，清除后整块空白），
+      // 用 hidden 属性切换显隐
+      if (codeEl) {
+        codeEl.hidden = !has;
+        if (has) codeEl.textContent = text;
+      }
+      if (emptyEl) emptyEl.hidden = has;
+      if (lineEl) {
+        lineEl.textContent = has ? `${text.trim().split(/\r?\n/).length} 行` : "0 行";
+      }
+      if (has && codeEl) {
+        // 始终滚动到底部，展示最新日志
+        codeEl.scrollTop = codeEl.scrollHeight;
       }
     };
 
