@@ -493,7 +493,7 @@ def create_app():
             "default-src 'self'; "
             "script-src 'self' 'unsafe-inline'; "
             "style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data:; "
+            "img-src 'self' data: blob:; "
             "connect-src 'self' ws://127.0.0.1:* ws://localhost:*; "
             "frame-src 'self'; "
             "font-src 'self' data:; "
@@ -1061,7 +1061,7 @@ def create_app():
         if settings["ops_log_file"]:
             log_candidate = Path(settings["ops_log_file"]).expanduser().resolve()
             logs_root = (data_dir() / "logs").resolve()
-            if log_candidate != logs_root and logs_root not in log_candidate.parents:
+            if logs_root not in log_candidate.parents:
                 flash(request, "日志文件路径必须在应用数据目录的 logs 目录内。", "error")
                 return redirect("/settings")
         settings["proxy_refresh_script"] = str(form.get("proxy_refresh_script", settings.get("proxy_refresh_script", ""))).strip()
@@ -1071,7 +1071,7 @@ def create_app():
         # M16：ui_port 非数字不再 500，非法值回退默认并给下限 1
         settings["ui_port"] = coerce_int(
             form.get("ui_port", settings.get("ui_port", 8787)),
-            settings.get("ui_port", 8787),
+            8787,
             1,
         )
         save_app_settings(settings)
@@ -1216,7 +1216,7 @@ def create_app():
         # L19：读取前校验路径位于 data_dir()/logs/ 下（下载端点无写入限制，读取同样要收紧）
         resolved = log_path.expanduser().resolve()
         logs_root = (data_dir() / "logs").resolve()
-        if resolved != logs_root and logs_root not in resolved.parents:
+        if logs_root not in resolved.parents:
             logger.warning("Refusing to read ops log outside logs dir: %s", resolved)
             return ""
         if not log_path.exists():
@@ -1389,11 +1389,12 @@ def create_app():
         # WebSocket 握手不经过 BaseHTTPMiddleware（localhost_guard 不生效），手工校验：
         # 1) Host 头必须是本机（防 DNS rebinding：恶意网页解析到 127.0.0.1 后代理 noVNC）
         # 2) Origin 必须是本机 Web 控制台页面（防其他来源页面发起连接）
-        if not _hostname_allowed(websocket.headers.get("host", "")):
+        host_header = str(websocket.headers.get("host", "")).strip()
+        if not _hostname_allowed(host_header):
             await websocket.close(code=4403)
             return
-        ui_port = int(settings.get("ui_port", 8787))
-        allowed_origins = {f"http://127.0.0.1:{ui_port}", f"http://localhost:{ui_port}"}
+        # Origin 白名单基于请求 Host 动态构造，与页面实际端口天然一致（ui_port 可配置）
+        allowed_origins = {f"http://{host_header}", f"https://{host_header}"}
         origin = str(websocket.headers.get("origin", "") or "").rstrip("/")
         if origin and origin not in allowed_origins:
             await websocket.close(code=4403)
