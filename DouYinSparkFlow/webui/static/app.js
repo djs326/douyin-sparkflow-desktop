@@ -368,7 +368,12 @@
   });
   refresh();
   timer = window.setInterval(refresh, 10000);
-  window.addEventListener("pagehide", () => window.clearInterval(timer));
+  window.addEventListener("pagehide", () => {
+    window.clearInterval(timer);
+    // taskBannerTimer 与 overview timer 同 IIFE，一并清理（bfcache 恢复时
+    // interval 若残留会在隐藏页面继续每秒自增）
+    window.clearInterval(taskBannerTimer);
+  });
 })();
 
 (() => {
