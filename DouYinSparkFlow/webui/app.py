@@ -21,7 +21,6 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from core.friends import fetch_account_friends
 from core.send_state import history_entry_is_strong_confirmed_today, parse_sent_at
-from core.tasks import run_browser_tasks, task_run_lock
 from utils.config import (
     Environment,
     data_dir,
@@ -191,25 +190,6 @@ def _history_entry_strong_confirmed_today(entry):
     return history_entry_is_strong_confirmed_today(
         entry,
         datetime.now(_schedule_timezone()),
-    )
-
-
-def _target_sent_today(account, target_name):
-    entry = dict(account.get("message_history") or {}).get(target_name) or {}
-    return _history_entry_strong_confirmed_today(entry)
-
-
-def _target_unconfirmed_today(account, target_name):
-    entry = dict(account.get("message_history") or {}).get(target_name) or {}
-    sent_at = _parse_sent_at(entry.get("sentAt"))
-    if sent_at and sent_at.date() == datetime.now(_schedule_timezone()).date() and not _history_entry_strong_confirmed_today(entry):
-        return True
-    failure_entry = dict(account.get("failure_queue") or {}).get(target_name) or {}
-    last_attempt_at = _parse_sent_at(failure_entry.get("lastAttemptAt"))
-    return bool(
-        last_attempt_at
-        and last_attempt_at.date() == datetime.now(_schedule_timezone()).date()
-        and str(failure_entry.get("category") or "") == "send_unconfirmed"
     )
 
 
@@ -899,34 +879,22 @@ def create_app():
             flash(request, "已有发送任务正在运行，本次单目标重试没有启动。请等当前任务结束后再试。", "warning")
             return redirect("/ops/send-console")
 
-        account_copy = dict(account)
-        account_copy["targets"] = [target_name]
-        config = get_config(force_reload=True)
-        config["taskCount"] = 1
-
-        try:
-            with task_run_lock():
-                await run_browser_tasks(config, [account_copy])
-        except Exception as exc:
-            flash(request, f"重试失败 {account.get('username', 'Account')} / {target_name}：{exc}", "error")
-            return redirect("/ops/send-console")
-
-        updated_account = find_account(get_userData(force_reload=True), unique_id) or {}
-        if _target_sent_today(updated_account, target_name):
-            flash(request, f"已重试 {account.get('username', 'Account')} / {target_name}，并获得强证据确认。", "success")
-        elif _target_unconfirmed_today(updated_account, target_name):
-            failure_entry = dict(updated_account.get("failure_queue") or {}).get(target_name) or {}
-            reason = str(failure_entry.get("reason") or "Retry ran but did not get strong confirmation.")
-            flash(request, f"已执行 {account.get('username', 'Account')} / {target_name}，但未强确认，已进入待核验/待补发：{reason}", "warning")
+        # 单目标重试改走后台子进程（run_background_command + SPARKFLOW_TARGET_REFS）：
+        # 原实现用 task_run_lock 在 webui 进程内同步跑完整浏览器任务，锁内容写入的是
+        # webui 自身 pid——用户点"停止任务"会 taskkill /F /T 杀掉 Web 服务自身。
+        account_ref = str(account.get("account_ref") or unique_id).strip()
+        pid = run_task_now(account_refs=[account_ref], target_refs=[target_name])
+        if pid == TASK_ALREADY_RUNNING:
+            flash(request, "已有发送任务正在运行，本次单目标重试没有启动。请等当前任务结束后再试。", "warning")
+        elif pid == -1:
+            flash(request, "单目标重试启动失败，请查看服务端日志。", "error")
         else:
-            account_failure = dict(updated_account.get("account_failure") or {})
-            affected_targets = list(account_failure.get("affectedTargets") or [])
-            failure_entry = dict(updated_account.get("failure_queue") or {}).get(target_name) or {}
-            if target_name in affected_targets:
-                reason = str(account_failure.get("reason") or "Account-level browser failure.")
-            else:
-                reason = str(failure_entry.get("reason") or "Retry did not confirm a successful send.")
-            flash(request, f"重试未成功 {account.get('username', 'Account')} / {target_name}：{reason}", "error")
+            flash(
+                request,
+                f"已启动 {account.get('username', 'Account')} / {target_name} 的后台重试（pid {pid}），"
+                "实际结果请刷新发送控制台查看。",
+                "info",
+            )
         return redirect("/ops/send-console")
 
     @app.post("/accounts/{unique_id}/mark-target-unconfirmed")

@@ -1645,6 +1645,14 @@ def _requested_account_refs():
     return {item.strip() for item in raw.split(",") if item.strip()}
 
 
+def _requested_target_refs():
+    """单目标重试支持：SPARKFLOW_TARGET_REFS 指定要重试的目标名（配合 ACCOUNT_REFS 使用）。"""
+    raw = os.getenv("SPARKFLOW_TARGET_REFS")
+    if raw is None:
+        return None
+    return {_normalize_target_name(item) for item in raw.split(",") if item.strip()}
+
+
 def _unsent_retry_max_attempts():
     raw_value = str(os.getenv("SPARKFLOW_UNSENT_RETRY_MAX_ATTEMPTS") or "3").strip()
     try:
@@ -2852,6 +2860,20 @@ async def runTasks():
         all_user_data = [user for user in all_user_data if user.get("account_ref") in requested_refs]
     active_user_data = [user for user in all_user_data if user.get("enabled", True)]
     disabled_user_data = [user for user in all_user_data if not user.get("enabled", True)]
+
+    requested_target_refs = _requested_target_refs()
+    if requested_target_refs is not None:
+        filtered_users = []
+        for user in active_user_data:
+            filtered_user = dict(user)
+            filtered_user["targets"] = [
+                target
+                for target in (user.get("targets") or [])
+                if _normalize_target_name(target) in requested_target_refs
+            ]
+            filtered_users.append(filtered_user)
+        active_user_data = filtered_users
+        logger.info("SPARKFLOW_TARGET_REFS=%s applied", ",".join(sorted(requested_target_refs)))
 
     logger.info("Starting tasks with config")
     logger.info("multiTask=%s taskCount=%s", active_config["multiTask"], active_config["taskCount"])

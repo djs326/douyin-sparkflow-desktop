@@ -8,6 +8,8 @@ import re
 import shlex
 import subprocess
 import sys
+import threading
+import time
 import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -29,6 +31,12 @@ from utils.process import pid_is_alive
 logger = logging.getLogger(__name__)
 
 TASK_ALREADY_RUNNING = -2
+
+# 进程内互斥：串行化手动/调度器任务启动（防连点按钮/并发调度各拉起一个子进程）
+_run_task_mutex = threading.Lock()
+
+# 假活锁告警阈值：pid 存活但任务锁年龄超过该值即标记可疑（正常任务不会运行这么久）
+TASK_LOCK_SUSPICIOUS_AGE_SECONDS = 6 * 3600
 
 TASK_SCHEDULE_MARKERS = (
     "docker compose run --rm task",
@@ -126,6 +134,31 @@ def stop_running_task():
             )
         except Exception as exc:
             logger.error("Failed to kill task pid=%s: %s", pid, exc)
+            return False, f"停止任务失败：{exc}（任务锁已保留）"
+        # 轮询确认进程真正消失后再删锁；进程仍存活时保留锁，
+        # 避免"taskkill 失败但锁被删"导致新任务与旧任务并发。
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            if not _pid_is_alive(pid):
+                break
+            time.sleep(0.5)
+        if _pid_is_alive(pid):
+            logger.warning("Task pid=%s still alive after taskkill; keeping task lock", pid)
+            return False, f"任务进程（pid {pid}）仍在运行，已保留任务锁，请稍后重试"
+    # 删除前重读锁内容比对 pid（ABA 防护：不误删他人重建的锁）
+    try:
+        raw = lock_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        raw = ""
+    current_pid = _parse_lock_pid(raw)
+    if current_pid != pid:
+        logger.warning(
+            "Refusing to remove task lock %s: owner changed (was pid=%s, now %s)",
+            lock_path,
+            pid,
+            current_pid,
+        )
+        return False, "任务锁已被其他进程接管，未删除"
     try:
         lock_path.unlink(missing_ok=True)
     except OSError:
@@ -144,15 +177,8 @@ def task_run_lock_status():
             "stale": False,
             "staleReason": "",
             "staleRemoved": False,
-        }
-        return {
-            "running": False,
-            "path": str(lock_path),
-            "pid": None,
-            "ageSeconds": 0,
-            "stale": False,
-            "staleReason": "",
-            "staleRemoved": False,
+            "suspicious": False,
+            "suspiciousReason": "",
         }
 
     raw = lock_path.read_text(encoding="utf-8", errors="ignore")
@@ -168,6 +194,8 @@ def task_run_lock_status():
             "stale": True,
             "staleReason": "lock_stat_failed",
             "staleRemoved": False,
+            "suspicious": False,
+            "suspiciousReason": "",
         }
 
     if pid is not None and not _pid_is_alive(pid):
@@ -179,6 +207,8 @@ def task_run_lock_status():
             "stale": True,
             "staleReason": "owner_pid_missing",
             "staleRemoved": False,
+            "suspicious": False,
+            "suspiciousReason": "",
         }
 
     if pid is None and age_seconds > 7200:
@@ -190,6 +220,24 @@ def task_run_lock_status():
             "stale": True,
             "staleReason": "unreadable_lock",
             "staleRemoved": False,
+            "suspicious": False,
+            "suspiciousReason": "",
+        }
+
+    # 假活锁探测：pid 存活但锁龄超过合理上限（正常任务不会运行这么久）——
+    # 可能是任务崩溃后 PID 被复用，或子进程挂起。只标记告警，不自动删锁
+    # （守住 test_stale_lock_inspection_does_not_delete_file 契约）。
+    if pid is not None and age_seconds > TASK_LOCK_SUSPICIOUS_AGE_SECONDS:
+        return {
+            "running": True,
+            "path": str(lock_path),
+            "pid": pid,
+            "ageSeconds": age_seconds,
+            "stale": False,
+            "staleReason": "",
+            "staleRemoved": False,
+            "suspicious": True,
+            "suspiciousReason": f"lock_older_than_{TASK_LOCK_SUSPICIOUS_AGE_SECONDS // 3600}h_but_pid_alive",
         }
 
     return {
@@ -200,6 +248,8 @@ def task_run_lock_status():
         "stale": False,
         "staleReason": "",
         "staleRemoved": False,
+        "suspicious": False,
+        "suspiciousReason": "",
     }
 
 
@@ -338,6 +388,7 @@ def run_background_command(args, log_path, cwd=None, env=None):
             cwd=str(cwd_path),
             stdout=handle,
             stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
             env=child_env,
         )
         handle.write(f"[WEB_TRIGGER] {started_at} pid={process.pid}\n".encode("utf-8", errors="replace"))
@@ -400,7 +451,14 @@ def get_task_container_rows():
         return []
 
 
-def run_task_now(*, unsent_only=False, failed_only=False, force_all=False, account_refs=None):
+def run_task_now(*, unsent_only=False, failed_only=False, force_all=False, account_refs=None, target_refs=None):
+    # 进程内互斥：连点按钮/调度器+手动并发时，串行化三个 run 入口，
+    # 避免各自拉起子进程后第二个空耗等待任务锁（TOCTOU 快照不可靠）。
+    if not _run_task_mutex.acquire(blocking=False):
+        logger.info(
+            "Refusing to start manual task because another start request is in flight"
+        )
+        return TASK_ALREADY_RUNNING
     try:
         lock_status = task_run_lock_status()
         if lock_status.get("running"):
@@ -419,6 +477,8 @@ def run_task_now(*, unsent_only=False, failed_only=False, force_all=False, accou
         }
         if account_refs is not None:
             run_env["SPARKFLOW_ACCOUNT_REFS"] = ",".join(sorted({str(ref).strip() for ref in account_refs if str(ref).strip()}))
+        if target_refs is not None:
+            run_env["SPARKFLOW_TARGET_REFS"] = ",".join(sorted({str(ref).strip() for ref in target_refs if str(ref).strip()}))
         if force_all:
             run_env["SPARKFLOW_MANUAL_FORCE_ALL"] = "1"
         elif failed_only:
@@ -438,11 +498,13 @@ def run_task_now(*, unsent_only=False, failed_only=False, force_all=False, accou
             cwd=cwd,
             env=run_env,
         )
-    except Exception as exc:
-        import traceback
-        Path("task_error.txt").write_text(traceback.format_exc(), encoding="utf-8")
-        logger.error("run_task_now failed: %s", exc)
+    except Exception:
+        # 错误信息写入运行日志（data_dir 下），不再写 cwd 相对路径 task_error.txt：
+        # 打包版安装目录只读时相对路径写入会二次抛异常、掩盖原始错误。
+        logger.exception("run_task_now failed")
         return -1
+    finally:
+        _run_task_mutex.release()
 
 
 def run_failed_retry_now(*, account_refs=None):
@@ -769,7 +831,13 @@ async def run_send_window_scheduler():
                 last_trigger_slot = None
                 continue
             now = datetime.now(_schedule_timezone())
-            if now.hour < window["startHour"] or now.hour > window["endHour"]:
+            # endHour 整点（minute==0）仍触发最后一次，此后不再触发——
+            # 与 crontab 版语义一致（endHour-1 的 interval + endHour:00 的整点触发）
+            if (
+                now.hour < window["startHour"]
+                or now.hour > window["endHour"]
+                or (now.hour == window["endHour"] and now.minute > 0)
+            ):
                 last_trigger_slot = None
                 continue
             interval = window["scheduleIntervalMinutes"]
