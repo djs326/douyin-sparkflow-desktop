@@ -2127,13 +2127,15 @@ def _persist_friend_index(user, friend_records, scanned_at, *, scan_complete, mi
         if scan_complete and friend_records:
             matched_account.pop("account_failure", None)
         captured["meta"] = meta
+        captured["index"] = dict(existing_index)
         return accounts
 
     update_user_data(mutate)
     if "meta" not in captured:
         return
     meta = captured["meta"]
-    user["friend_index"] = dict((friend_records or {}))
+    # 与磁盘一致的完整合并索引（含 lastSeenAt 的历史条目），而非本次传入的增量
+    user["friend_index"] = captured["index"]
     user["friend_index_meta"] = dict(meta)
     if scan_complete and friend_records:
         user.pop("account_failure", None)

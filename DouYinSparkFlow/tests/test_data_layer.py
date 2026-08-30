@@ -131,6 +131,69 @@ class SaveJsonFileRestrictsPermissionsTests(unittest.TestCase):
                 config._save_json_file(target, [{"username": "demo"}])
             restrict_mock.assert_called_once_with(target)
 
+    def test_acl_reapplied_after_replace_swaps_inode(self):
+        # os.replace 每次换新 inode（ACL 回继承）：inode 键控缓存必须重新收紧
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir) / "usersData.json"
+            with (
+                patch.object(config.os, "name", "nt"),
+                patch.object(config.os, "getlogin", return_value="tester"),
+                patch.object(__import__("subprocess"), "run") as run_mock,
+            ):
+                config._save_json_file(target, [{"username": "a"}])
+                config._save_json_file(target, [{"username": "b"}])
+                config._save_json_file(target, [{"username": "c"}])
+
+            # 3 次写盘 = 3 次换 inode = icacls 应执行 3 次（路径缓存会漏掉后 2 次）
+            self.assertEqual(3, run_mock.call_count)
+
+
+class FriendIndexSyncTests(unittest.TestCase):
+    """_persist_friend_index 内存副本必须与磁盘一致（完整合并索引）。"""
+
+    def test_user_memory_copy_keeps_full_merged_index(self):
+        from core import tasks
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_root = Path(temp_dir) / "data"
+            users_path = Path(temp_dir) / "usersData.json"
+            data_root.mkdir(parents=True)
+            users_path.write_text(
+                json.dumps([
+                    {
+                        "unique_id": "123",
+                        "account_ref": "acc-1",
+                        "username": "demo",
+                        "targets": [],
+                        "friend_index": {
+                            "老友": {"visibleName": "老友", "normalizedName": "老友", "lastSeenAt": "2026-01-01T00:00:00+00:00"},
+                        },
+                    }
+                ]),
+                encoding="utf-8",
+            )
+            config.userData = None
+            with (
+                patch.object(config, "data_dir", return_value=data_root),
+                patch.object(config, "users_data_path", return_value=users_path),
+                patch.object(config, "_restrict_file_permissions"),
+            ):
+                user = {
+                    "unique_id": "123",
+                    "username": "demo",
+                    "targets": [],
+                }
+                tasks._persist_friend_index(
+                    user,
+                    {"新友": {"visibleName": "新友", "normalizedName": "新友", "stableKeys": ["k"]}},
+                    "2026-02-01T00:00:00+00:00",
+                    scan_complete=True,
+                )
+
+            # 内存副本必须包含历史条目"老友"（原实现仅带本次增量，属契约破坏）
+            self.assertIn("老友", user["friend_index"])
+            self.assertIn("新友", user["friend_index"])
+
 
 if __name__ == "__main__":
     unittest.main()

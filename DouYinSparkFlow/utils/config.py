@@ -234,7 +234,9 @@ def _load_json_file(path, defaults=None):
     return _merge_defaults(data, defaults)
 
 
-# 已收紧 ACL 的路径缓存：icacls 是子进程调用，高频写盘（发送账本）不应每次都执行
+# 已收紧 ACL 的文件缓存：键为 (st_dev, st_ino)——
+# _save_json_file 用 mkstemp+os.replace 每次换新 inode（ACL 回父目录继承），
+# 路径字符串缓存会漏掉换 inode 后的重新收紧，故按 inode 键控（每次写盘收紧一次，~14ms 可忽略）
 _ACL_RESTRICTED_PATHS = set()
 
 
@@ -244,9 +246,13 @@ def _restrict_file_permissions(path):
     - POSIX：chmod 600（仅属主可读写）
     - Windows：icacls 移除继承并仅授予当前用户读/写
     usersData.json（含全部抖音 cookies）与 login_desktop_auth.token 等同机敏感文件
-    均应经此收紧，避免同机其他用户可读。每个路径仅执行一次。
+    均应经此收紧，避免同机其他用户可读。每个文件 inode 仅执行一次。
     """
-    key = str(path)
+    try:
+        stat_result = path.stat()
+    except OSError:
+        return
+    key = (stat_result.st_dev, stat_result.st_ino)
     if key in _ACL_RESTRICTED_PATHS:
         return
     try:
@@ -322,7 +328,7 @@ def json_file_lock(name):
     with _FILE_LOCK_GUARD:
         # r+b 而非 a+b：a 模式写永远追加（即使 seek 到 0），会导致锁文件每次 +1 字节无限增长
         if not lock_path.exists():
-            lock_path.write_bytes(b"")
+            lock_path.write_bytes(b"x")
         handle = open(lock_path, "r+b")
         try:
             if os.name == "nt":
@@ -371,7 +377,7 @@ def save_config(new_config):
     return deepcopy(config)
 
 
-def update_user_data(mutator, *, force_reload=True):
+def update_user_data(mutator):
     """原子读-改-写 usersData.json（锁内完成整个 RMW 窗口）。
 
     M5：webui 与任务子进程并发写 usersData 时，分开的 get_userData + save_userData
@@ -383,13 +389,17 @@ def update_user_data(mutator, *, force_reload=True):
             return accounts   # 返回 None 表示不写入
 
         update_user_data(mutate)
+
+    约束：mutator 内不得调用任何会获取 json_file_lock 的函数
+    （get_userData/save_userData/update_user_data/get_config(force_reload=True)），
+    _FILE_LOCK_GUARD 为不可重入 threading.Lock，重入会自锁死锁。
     """
     global userData
     with json_file_lock(USERDATAFILE):
         accounts = _load_json_file(users_data_path(), [])
         updated = mutator(accounts)
         if updated is None:
-            return deepcopy(userData) if userData is not None else deepcopy(accounts)
+            return deepcopy(accounts)
         userData = updated
         _save_json_file(users_data_path(), updated)
     return deepcopy(userData)
