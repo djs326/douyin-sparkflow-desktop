@@ -15,21 +15,14 @@ import uuid
 from copy import deepcopy
 from pathlib import Path
 
-from utils.config import Environment, data_dir, get_environment, repo_root
+from utils.config import data_dir
 
 
 def _default_lock_path() -> Path:
-    # 打包版锁文件位于数据目录 state/ 下；开发版沿用仓库 state/
-    if get_environment() == Environment.PACKED:
-        return data_dir() / "state" / "login-workspace.lock.json"
-    candidates = [
-        repo_root().parent / "state",
-        repo_root() / "state",
-    ]
-    for candidate in candidates:
-        if candidate.exists() or candidate.parent.exists():
-            return candidate / "login-workspace.lock.json"
-    return candidates[0] / "login-workspace.lock.json"
+    # L3：所有环境统一经 data_dir()（LOCAL=DouYinSparkFlow/state/，PACKED=%APPDATA%）。
+    # 原实现 LOCAL 分支用 repo_root().parent/state（仓库根 state/），与 data_dir() 不一致，
+    # 锁文件与数据分离在另一个目录里。
+    return data_dir() / "state" / "login-workspace.lock.json"
 
 
 LOCK_PATH = _default_lock_path()

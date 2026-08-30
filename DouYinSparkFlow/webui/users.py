@@ -1,4 +1,10 @@
-"""Persistent Web UI users and stable account ownership helpers."""
+"""Persistent Web UI users and stable account ownership helpers.
+
+注意（L23）：桌面版为本地单机免登录——current_user 恒为 admin、/admin/users/* 恒 403、
+/login 恒重定向，本模块的多用户体系（pbkdf2、webui_users.json、account_refs 权限、
+登录限速）在桌面版不可达，属容器版遗留死代码。保留（tests/test_multuiers.py 依赖），
+勿删除；改动时注意与 webui/auth.py、webui/app.py 的恒放行分支保持一致。
+"""
 
 from __future__ import annotations
 

@@ -201,7 +201,12 @@ async def collect_friend_names(page):
         if await loading.count() > 0 and await loading.is_visible():
             await asyncio.sleep(1.5)
 
-        scrollable_element = await page.locator(SCROLLABLE_FRIENDS_SELECTOR).element_handle()
+        # L7：element_handle() 找不到时抛异常而非返回 None——显式捕获，
+        # 让"未找到滚动容器"走统一的容错分支（原 if not scrollable_element 是死代码）
+        try:
+            scrollable_element = await page.locator(SCROLLABLE_FRIENDS_SELECTOR).element_handle()
+        except Exception:
+            scrollable_element = None
         if not scrollable_element:
             if found_names:
                 return found_names

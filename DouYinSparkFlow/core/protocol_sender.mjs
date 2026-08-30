@@ -56,9 +56,21 @@ function toNonNegativeInteger(value, fallback = 0) {
   return parsed;
 }
 
+// Nit：消息间隔上限（秒）——巨值配置会让发送挂起直至 600s 进程超时
+const MESSAGE_INTERVAL_MAX_CAP_SECONDS = 300;
+
 function normalizeSendStrategy(raw = {}) {
-  const intervalMin = toNonNegativeInteger(raw.messageIntervalSecondsMin, 0);
-  const intervalMax = Math.max(intervalMin, toNonNegativeInteger(raw.messageIntervalSecondsMax, intervalMin));
+  const intervalMin = Math.min(
+    toNonNegativeInteger(raw.messageIntervalSecondsMin, 0),
+    MESSAGE_INTERVAL_MAX_CAP_SECONDS,
+  );
+  const intervalMax = Math.max(
+    intervalMin,
+    Math.min(
+      toNonNegativeInteger(raw.messageIntervalSecondsMax, intervalMin),
+      MESSAGE_INTERVAL_MAX_CAP_SECONDS,
+    ),
+  );
   return {
     messageIntervalSecondsMin: intervalMin,
     messageIntervalSecondsMax: intervalMax,

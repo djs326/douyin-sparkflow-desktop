@@ -14,11 +14,17 @@ _ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1", "testserver"}
 
 def _hostname_allowed(host_header):
     if not host_header:
-        # HTTP/1.0 无 Host 头：uvicorn 仅按监听地址路由，视为本机直连
-        return True
-    host = host_header.split(":", 1)[0].strip().lower()
-    if host.startswith("[") and host.endswith("]"):
-        host = host[1:-1]
+        # L1：HTTP/1.1 起 Host 头必填；无 Host 头直接拒绝（原实现放行是
+        # DNS rebinding 的边界妥协，改为拒绝收窄攻击面）
+        return False
+    raw = str(host_header).strip().lower()
+    if raw.startswith("["):
+        # IPv6 字面量如 [::1]:8787：先剥离 [] 再取主机部分，
+        # 否则 split(":") 会把 "[" 当主机名，白名单里的 ::1 永远走不到
+        end = raw.find("]")
+        host = raw[1:end] if end > 0 else raw
+    else:
+        host = raw.split(":", 1)[0]
     return host in _ALLOWED_HOSTS
 
 

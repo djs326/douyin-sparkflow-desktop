@@ -1,3 +1,9 @@
+"""密码哈希与 Web 会话认证。
+
+注意（L23）：桌面版本地单机免登录——issue_session/login 限速等路径不可达，
+本模块大部分逻辑为容器版遗留死代码（保留，tests 依赖），勿删除。
+"""
+
 import hashlib
 import hmac
 import secrets

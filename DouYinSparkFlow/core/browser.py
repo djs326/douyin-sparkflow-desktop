@@ -196,6 +196,11 @@ async def get_browser(GUI=False, network_mode=None):
         return playwright, browser
     except Exception as exc:
         if "Executable doesn't exist" in str(exc) and get_environment() != Environment.GITHUBACTION:
+            if get_environment() == Environment.PACKED:
+                # L6：打包版不内置浏览器（用系统 Edge/Chrome），sys.executable -m playwright install
+                # 在 exe 中无效——直接报错，不再尝试 install 后静默退出
+                console.print("[bold red]未检测到系统 Edge/Chrome 浏览器，无法启动发送浏览器。[/bold red]")
+                sys.exit(1)
             console.print("[bold red]Playwright browser is missing.[/bold red]")
             await install_browser()
             sys.exit(1)
@@ -228,6 +233,11 @@ async def get_persistent_browser_context(profile_name, GUI=False, root=None, net
         return playwright, context, profile_dir
     except Exception as exc:
         if "Executable doesn't exist" in str(exc) and get_environment() != Environment.GITHUBACTION:
+            if get_environment() == Environment.PACKED:
+                # L6：打包版不内置浏览器（用系统 Edge/Chrome），sys.executable -m playwright install
+                # 在 exe 中无效——直接报错，不再尝试 install 后静默退出
+                console.print("[bold red]未检测到系统 Edge/Chrome 浏览器，无法启动发送浏览器。[/bold red]")
+                sys.exit(1)
             console.print("[bold red]Playwright browser is missing.[/bold red]")
             await install_browser()
             sys.exit(1)

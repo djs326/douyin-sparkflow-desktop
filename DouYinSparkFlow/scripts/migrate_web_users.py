@@ -1,7 +1,9 @@
 """Idempotently initialize SparkFlow Web users and account ownership.
 
-Usage (passwords can also be supplied through environment variables):
-    python scripts/migrate_web_users.py --zxb-password '...' --zcf-password '...'
+Usage (passwords must be supplied through environment variables,
+never command-line arguments — they are visible in the process list):
+    $env:SPARKFLOW_ZXB_PASSWORD='...'; $env:SPARKFLOW_ZCF_PASSWORD='...'
+    python scripts/migrate_web_users.py
 """
 
 from __future__ import annotations
@@ -30,8 +32,8 @@ BINDINGS = {
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Initialize SparkFlow Web users and account ownership")
-    parser.add_argument("--zxb-password", default=os.getenv("SPARKFLOW_ZXB_PASSWORD", ""))
-    parser.add_argument("--zcf-password", default=os.getenv("SPARKFLOW_ZCF_PASSWORD", ""))
+    # L30：密码只从环境变量读取（SPARKFLOW_ZXB_PASSWORD / SPARKFLOW_ZCF_PASSWORD），
+    # 不提供命令行参数——进程列表可见密码属敏感信息泄漏
     parser.add_argument("--backup-dir", default="")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
@@ -51,10 +53,16 @@ def backup_json_files(directory: Path):
 
 def main():
     args = parse_args()
-    passwords = {"zxb": args.zxb_password, "zcf": args.zcf_password}
+    passwords = {
+        "zxb": os.getenv("SPARKFLOW_ZXB_PASSWORD", ""),
+        "zcf": os.getenv("SPARKFLOW_ZCF_PASSWORD", ""),
+    }
     missing = [username for username, password in passwords.items() if not password]
     if missing:
-        raise SystemExit("Missing password for: " + ", ".join(missing))
+        raise SystemExit(
+            "Missing password for: " + ", ".join(missing)
+            + "（请通过环境变量 SPARKFLOW_ZXB_PASSWORD / SPARKFLOW_ZCF_PASSWORD 提供，勿用命令行参数）"
+        )
 
     accounts = get_userData(force_reload=True)
     changed = False

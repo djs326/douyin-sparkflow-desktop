@@ -433,14 +433,6 @@ def get_container_status():
         return []
 
 
-class contextlib_suppress_json:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return exc_type is json.JSONDecodeError
-
-
 def get_task_container_rows():
     try:
         rows = get_container_status()
