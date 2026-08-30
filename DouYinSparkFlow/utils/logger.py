@@ -3,20 +3,24 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 
-def read_text_autodetect(path):
-    """读取文本文件，自动探测编码。
+def decode_bytes_autodetect(data):
+    """解码字节，自动探测编码：先按 UTF-8 严格解码，失败回退 GBK，最后兜底 replace。
 
-    打包版子进程的 stdout 管道默认按系统 ANSI 编码（中文 Windows 为 GBK）输出，
-    旧日志可能是 GBK；新日志已统一 UTF-8。读取时先按 UTF-8 严格解码，
-    失败则回退 GBK，最后兜底 errors="replace"。
+    打包版子进程 stdout 被重定向到日志文件时默认按系统 ANSI 编码（中文 Windows 为
+    GBK）输出，旧日志与部分新日志是 GBK；app.log（FileHandler 指定 utf-8）为 UTF-8。
+    两种编码混存时统一用本函数解码即可正确显示中文。
     """
-    data = Path(path).read_bytes()
     for encoding in ("utf-8", "gbk"):
         try:
             return data.decode(encoding)
         except UnicodeDecodeError:
             continue
     return data.decode("utf-8", errors="replace")
+
+
+def read_text_autodetect(path):
+    """读取文本文件，自动探测编码（UTF-8 严格 → GBK 回退 → replace 兜底）。"""
+    return decode_bytes_autodetect(Path(path).read_bytes())
 
 # 日志格式
 LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s"
