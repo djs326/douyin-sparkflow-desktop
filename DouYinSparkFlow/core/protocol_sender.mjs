@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
@@ -27,6 +28,34 @@ const USER_AGENT =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36").trim();
 
 function noop() {}
+
+// 沙箱注入防护（H5）：注入对象属于外层 realm，其 .constructor 指向外层 Function，
+// 恶意 bundle 可借 `obj.constructor('return process')()` 逃逸。用 Proxy 包装注入对象，
+// 拦截 constructor/__proto__/prototype 访问与 getPrototypeOf，使触达外层构造器的
+// 路径全部失效（配合 codeGeneration 禁用，双层防护）。
+function sandboxSafe(value) {
+  if (value === null || (typeof value !== "function" && typeof value !== "object")) {
+    return value;
+  }
+  return new Proxy(value, {
+    get(target, prop, receiver) {
+      if (prop === "constructor" || prop === "__proto__" || prop === "prototype") {
+        return undefined;
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+    has(target, prop) {
+      if (prop === "constructor" || prop === "__proto__" || prop === "prototype") {
+        return false;
+      }
+      return Reflect.has(target, prop);
+    },
+    getPrototypeOf() {
+      // 防 Object.getPrototypeOf(x).constructor 逃逸（牺牲 instanceof 兼容性）
+      return null;
+    },
+  });
+}
 
 function toCookieString(cookies) {
   return (cookies || [])
@@ -113,12 +142,78 @@ async function readStdinJson() {
   return JSON.parse(raw);
 }
 
+async function sha256Hex(text) {
+  return crypto.createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+// bundle 完整性 manifest：首次下载记录 sha256（trust-on-first-use 基线），
+// 此后每次读取缓存前校验哈希，防本机进程篡改缓存注入恶意 SDK 代码
+const MANIFEST_FILENAME = "manifest.json";
+
+async function loadManifest(cacheDir) {
+  try {
+    return JSON.parse(await fs.promises.readFile(path.join(cacheDir, MANIFEST_FILENAME), "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+async function saveManifest(cacheDir, manifest) {
+  const manifestPath = path.join(cacheDir, MANIFEST_FILENAME);
+  const tempPath = `${manifestPath}.${process.pid}.${Date.now()}.tmp`;
+  await fs.promises.writeFile(tempPath, JSON.stringify(manifest, null, 2), "utf8");
+  try {
+    await fs.promises.rename(tempPath, manifestPath);
+  } catch (error) {
+    if (!fs.existsSync(manifestPath)) {
+      throw error;
+    }
+    await fs.promises.unlink(tempPath).catch(() => {});
+  }
+}
+
+async function downloadBundle(cacheDir, url) {
+  const filename = url.split("/").at(-1);
+  const filePath = path.join(cacheDir, filename);
+  const response = await fetchWithTimeout(url, {}, 60000);
+  if (!response.ok) {
+    throw new Error(`Failed to download SDK bundle ${url}: ${response.status}`);
+  }
+  const text = await response.text();
+  const hash = await sha256Hex(text);
+  // 原子落盘：先写临时文件再 rename，避免多 Node 进程并发交叉写坏 bundle
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  await fs.promises.writeFile(tempPath, text, "utf8");
+  try {
+    await fs.promises.rename(tempPath, filePath);
+  } catch (error) {
+    if (!fs.existsSync(filePath)) {
+      throw error;
+    }
+    await fs.promises.unlink(tempPath).catch(() => {});
+  }
+  return hash;
+}
+
 async function ensureBundles(cacheDir) {
   await fs.promises.mkdir(cacheDir, { recursive: true });
+  const manifest = await loadManifest(cacheDir);
   for (const url of SDK_BUNDLES) {
     const filename = url.split("/").at(-1);
     const filePath = path.join(cacheDir, filename);
     if (fs.existsSync(filePath)) {
+      // 缓存存在：先做 sha256 完整性校验（防本机篡改）；不匹配则重新下载并更新基线
+      let content;
+      try {
+        content = await fs.promises.readFile(filePath, "utf8");
+      } catch {
+        content = null;
+      }
+      if (content !== null && manifest[filename] && (await sha256Hex(content)) !== manifest[filename]) {
+        console.error(`[protocol_sender] SDK bundle hash mismatch for cached ${filename}, re-downloading`);
+        manifest[filename] = await downloadBundle(cacheDir, url);
+        continue;
+      }
       // 仅探测可用性；10s 无响应视为缓存仍可用（避免网络挂起拖死整个任务）
       let cached = true;
       try {
@@ -132,23 +227,10 @@ async function ensureBundles(cacheDir) {
       }
       continue;
     }
-    const response = await fetchWithTimeout(url, {}, 60000);
-    if (!response.ok) {
-      throw new Error(`Failed to download SDK bundle ${url}: ${response.status}`);
-    }
-    const text = await response.text();
-    // 原子落盘：先写临时文件再 rename，避免多 Node 进程并发交叉写坏 bundle
-    const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-    await fs.promises.writeFile(tempPath, text, "utf8");
-    try {
-      await fs.promises.rename(tempPath, filePath);
-    } catch (error) {
-      if (!fs.existsSync(filePath)) {
-        throw error;
-      }
-      await fs.promises.unlink(tempPath).catch(() => {});
-    }
+    manifest[filename] = await downloadBundle(cacheDir, url);
   }
+  // 写回（可能新增/更新的）完整性基线
+  await saveManifest(cacheDir, manifest);
 }
 
 async function fetchWithTimeout(url, options, timeoutMs) {
@@ -259,14 +341,14 @@ function createWebpackRequire(bundleDir, cookieString) {
     window: {},
     globalThis: null,
     console: sdkConsole,
-    setTimeout,
-    clearTimeout,
-    setInterval,
-    clearInterval,
-    Buffer,
-    TextDecoder,
-    TextEncoder,
-    Blob,
+    setTimeout: sandboxSafe(setTimeout),
+    clearTimeout: sandboxSafe(clearTimeout),
+    setInterval: sandboxSafe(setInterval),
+    clearInterval: sandboxSafe(clearInterval),
+    Buffer: sandboxSafe(Buffer),
+    TextDecoder: sandboxSafe(TextDecoder),
+    TextEncoder: sandboxSafe(TextEncoder),
+    Blob: sandboxSafe(Blob),
     document: documentRef,
     navigator: {
       userAgent: USER_AGENT,
@@ -287,17 +369,23 @@ function createWebpackRequire(bundleDir, cookieString) {
     localStorage: { getItem: () => null, setItem: noop, removeItem: noop },
     sessionStorage: { getItem: () => null, setItem: noop, removeItem: noop },
     performance: { now: () => Date.now() },
-    fetch,
-    XMLHttpRequest: XMLHttpRequestStub,
-    WebSocket: WebSocketStub,
-    URL,
-    URLSearchParams,
-    atob: (value) => Buffer.from(value, "base64").toString("binary"),
-    btoa: (value) => Buffer.from(value, "binary").toString("base64"),
-    crypto,
+    fetch: sandboxSafe(fetch),
+    XMLHttpRequest: sandboxSafe(XMLHttpRequestStub),
+    WebSocket: sandboxSafe(WebSocketStub),
+    URL: sandboxSafe(URL),
+    URLSearchParams: sandboxSafe(URLSearchParams),
+    atob: sandboxSafe((value) => Buffer.from(value, "base64").toString("binary")),
+    btoa: sandboxSafe((value) => Buffer.from(value, "binary").toString("base64")),
+    crypto: sandboxSafe(crypto),
   };
   context.window = context;
   context.globalThis = context;
+
+  // 沙箱逃逸防护（H5）：禁用字符串代码生成（eval / Function 构造器）。
+  // 注入的真实 Node 全局（Buffer/Blob/crypto/fetch 等）的 .constructor 指向外层
+  // Function，恶意 bundle 可借此执行 `Buffer.constructor('return process')()` 逃逸；
+  // 禁止 code generation 后该构造器在沙箱 context 内直接抛 EvalError，逃逸链被斩断。
+  context[Symbol.for("nodejs.vm.codeGeneration")] = { strings: false, wasm: false };
 
   for (const entry of fs.readdirSync(bundleDir).filter((name) => name.endsWith(".js")).sort()) {
     const code = fs.readFileSync(path.join(bundleDir, entry), "utf8");

@@ -239,7 +239,7 @@ def _build_protocol_command():
     )
 
 
-def _run_protocol_for_user(user, messages_by_target, dry_run, send_strategy):
+def _run_protocol_for_user(user, messages_by_target, dry_run, send_strategy, proxy=""):
     command, cwd, runner_label, runtime_repo_root = _build_protocol_command()
     payload = {
         "repoRoot": runtime_repo_root,
@@ -247,7 +247,18 @@ def _run_protocol_for_user(user, messages_by_target, dry_run, send_strategy):
         "account": user,
         "messagesByTarget": messages_by_target,
         "sendStrategy": send_strategy,
+        "proxy": proxy,
     }
+    child_env = os.environ.copy()
+    # M2：Node 24+ 的全局 fetch（undici）不读代理环境变量——设 NODE_USE_ENV_PROXY=1
+    # 后 HTTPS_PROXY/HTTP_PROXY 才会被采用；mihomo 模式下协议发送与浏览器走同一代理，
+    # 不再静默直连（与 Python 侧 requests 行为一致）。
+    proxy = str(proxy or "").strip()
+    if proxy:
+        child_env["NODE_USE_ENV_PROXY"] = "1"
+        child_env.setdefault("HTTPS_PROXY", proxy)
+        child_env.setdefault("HTTP_PROXY", proxy)
+        child_env.setdefault("NO_PROXY", "127.0.0.1,localhost")
     try:
         process = subprocess.run(
             command,
@@ -258,6 +269,7 @@ def _run_protocol_for_user(user, messages_by_target, dry_run, send_strategy):
             cwd=str(cwd),
             check=False,
             timeout=600,
+            env=child_env,
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(
@@ -297,6 +309,7 @@ async def run_protocol_tasks(config, accounts, message_builder):
     concurrency = int(config.get("taskCount", 1)) if multi_task else 1
     semaphore = asyncio.Semaphore(max(concurrency, 1))
     send_strategy = _normalize_send_strategy(config)
+    proxy = str(config.get("proxyAddress") or "").strip()
 
     async def _worker(user):
         async with semaphore:
@@ -333,6 +346,7 @@ async def run_protocol_tasks(config, accounts, message_builder):
                 messages_by_target,
                 dry_run,
                 send_strategy,
+                proxy,
             )
             sent_entries = result.get("sent", [])
             succeeded_count = len([
